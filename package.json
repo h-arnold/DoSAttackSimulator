@@ -6,7 +6,7 @@
   "scripts": {
     "dev:css": "tailwindcss -i ./src/input.css -o ./css/main.css --watch",
     "build:css": "tailwindcss -i ./src/input.css -o ./css/main.css --minify",
-    "test": "vitest",
+    "test": "vitest run",
     "test:visual": "playwright test",
     "test:visual:headed": "playwright test --headed",
     "test:visual:debug": "playwright test --debug",
