@@ -126,4 +126,49 @@ describe('defaultSimulationState', () => {
 
     expectPlainData(secondState);
   });
+
+  it('separates defense domains into firewall policy, topology, and capacity branches', () => {
+    const defense = defaultSimulationState().config.defense;
+
+    expect(Object.keys(defense.firewall).sort()).toEqual([
+      'blockedProtocols',
+      'blockedSubnets',
+      'rateLimit'
+    ]);
+    expect(Object.keys(defense.topology).sort()).toEqual([
+      'originIP',
+      'publicIP',
+      'reverseProxyEnabled'
+    ]);
+    expect(Object.keys(defense.capacity).sort()).toEqual([
+      'loadBalancingEnabled',
+      'loadBalancingMultiplier',
+      'serverCapacityMultiplier'
+    ]);
+  });
+
+  it('does not leak cross-domain fields into adjacent defense branches', () => {
+    const { firewall, topology, capacity } = defaultSimulationState().config.defense;
+
+    expect(firewall).not.toHaveProperty('reverseProxyEnabled');
+    expect(firewall).not.toHaveProperty('publicIP');
+    expect(firewall).not.toHaveProperty('originIP');
+    expect(firewall).not.toHaveProperty('serverCapacityMultiplier');
+    expect(firewall).not.toHaveProperty('loadBalancingEnabled');
+    expect(firewall).not.toHaveProperty('loadBalancingMultiplier');
+
+    expect(topology).not.toHaveProperty('blockedProtocols');
+    expect(topology).not.toHaveProperty('blockedSubnets');
+    expect(topology).not.toHaveProperty('rateLimit');
+    expect(topology).not.toHaveProperty('serverCapacityMultiplier');
+    expect(topology).not.toHaveProperty('loadBalancingEnabled');
+    expect(topology).not.toHaveProperty('loadBalancingMultiplier');
+
+    expect(capacity).not.toHaveProperty('blockedProtocols');
+    expect(capacity).not.toHaveProperty('blockedSubnets');
+    expect(capacity).not.toHaveProperty('rateLimit');
+    expect(capacity).not.toHaveProperty('reverseProxyEnabled');
+    expect(capacity).not.toHaveProperty('publicIP');
+    expect(capacity).not.toHaveProperty('originIP');
+  });
 });

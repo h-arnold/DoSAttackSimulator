@@ -1,4 +1,4 @@
-import { CONSTANTS } from '../constants.js';
+import { ATTACK_TYPES, CONSTANTS, PROTOCOLS } from '../constants.js';
 import GenuineTraffic from '../models/GenuineTraffic.js';
 import Attacker from '../models/Attacker.js';
 import Server from '../models/Server.js';
@@ -59,6 +59,28 @@ function getWeightedTotal(entries) {
   return entries.reduce((sum, entry) => sum + (entry.weight || 0), 0);
 }
 
+export const ORCHESTRATOR_COMMAND_TYPES = Object.freeze({
+  START_SIMULATION: 'START_SIMULATION',
+  STOP_SIMULATION: 'STOP_SIMULATION',
+  START_ATTACK: 'START_ATTACK',
+  STOP_ATTACK: 'STOP_ATTACK',
+  RESET_SIMULATION: 'RESET_SIMULATION',
+  SET_ATTACK_CONFIG: 'SET_ATTACK_CONFIG',
+  SET_FIREWALL_PROTOCOL_BLOCK: 'SET_FIREWALL_PROTOCOL_BLOCK',
+  SET_FIREWALL_SUBNET_BLOCK: 'SET_FIREWALL_SUBNET_BLOCK',
+  SET_FIREWALL_RATE_LIMIT_ENABLED: 'SET_FIREWALL_RATE_LIMIT_ENABLED',
+  SET_FIREWALL_RATE_LIMIT_THRESHOLD: 'SET_FIREWALL_RATE_LIMIT_THRESHOLD',
+  SET_FIREWALL_RATE_LIMIT_SCOPE: 'SET_FIREWALL_RATE_LIMIT_SCOPE',
+  SET_REVERSE_PROXY_ENABLED: 'SET_REVERSE_PROXY_ENABLED',
+  SET_LOAD_BALANCING_ENABLED: 'SET_LOAD_BALANCING_ENABLED',
+  SET_SERVER_CAPACITY_MULTIPLIER: 'SET_SERVER_CAPACITY_MULTIPLIER',
+  SET_PROXY_BADGE_MODE: 'SET_PROXY_BADGE_MODE'
+});
+
+const VALID_ATTACK_TYPES = new Set(Object.values(ATTACK_TYPES));
+const VALID_PROTOCOLS = new Set(Object.values(PROTOCOLS));
+const VALID_RATE_LIMIT_SCOPES = new Set(['ALL', ...Object.values(PROTOCOLS)]);
+
 export default class Orchestrator {
   constructor() {
     this.store = new SimulationStore();
@@ -71,6 +93,269 @@ export default class Orchestrator {
     this.store.replaceState(defaultSimulationState());
     this.analyzerLogBudget = 0;
     this.initializeModels();
+  }
+
+  dispatch(command) {
+    this.assertValidCommandEnvelope(command);
+
+    switch (command.type) {
+      case ORCHESTRATOR_COMMAND_TYPES.START_SIMULATION:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.START_SIMULATION);
+        if (this.isSimulationRunning) {
+          throw new Error('Invalid transition: simulation is already running.');
+        }
+        this.isSimulationRunning = true;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.STOP_SIMULATION:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.STOP_SIMULATION);
+        if (!this.isSimulationRunning) {
+          throw new Error('Invalid transition: simulation is already stopped.');
+        }
+        this.isSimulationRunning = false;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.START_ATTACK:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.START_ATTACK);
+        if (this.attacker.isAttacking) {
+          throw new Error('Invalid transition: attack is already running.');
+        }
+        this.attacker.generateBotnetRanges();
+        this.attacker.isAttacking = true;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.STOP_ATTACK:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.STOP_ATTACK);
+        if (!this.attacker.isAttacking) {
+          throw new Error('Invalid transition: attack is already stopped.');
+        }
+        this.attacker.isAttacking = false;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.RESET_SIMULATION:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.RESET_SIMULATION);
+        this.reset();
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG:
+        this.applySetAttackConfig(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_PROTOCOL_BLOCK:
+        this.applySetFirewallProtocolBlock(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_SUBNET_BLOCK:
+        this.applySetFirewallSubnetBlock(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_ENABLED:
+        this.applySetFirewallRateLimitEnabled(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_THRESHOLD:
+        this.applySetFirewallRateLimitThreshold(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_SCOPE:
+        this.applySetFirewallRateLimitScope(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED:
+        this.applySetReverseProxyEnabled(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED:
+        this.applySetLoadBalancingEnabled(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_SERVER_CAPACITY_MULTIPLIER:
+        this.applySetServerCapacityMultiplier(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE:
+        this.applySetProxyBadgeMode(command);
+        return;
+      default:
+        throw new Error(`Unknown command type: ${command.type}`);
+    }
+  }
+
+  assertValidCommandEnvelope(command) {
+    if (!command || typeof command !== 'object' || Array.isArray(command) || typeof command.type !== 'string') {
+      throw new TypeError('Command must be an object with a string type.');
+    }
+  }
+
+  assertNoPayload(command, commandType) {
+    if (Object.prototype.hasOwnProperty.call(command, 'payload')) {
+      throw new Error(`${commandType} does not accept a payload.`);
+    }
+  }
+
+  assertObjectPayload(command, commandType) {
+    const { payload } = command;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error(`${commandType} requires an object payload.`);
+    }
+    return payload;
+  }
+
+  applySetAttackConfig(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG);
+    const allowedFields = ['deviceCount', 'attackType', 'bandwidthMultiplier', 'targetIP'];
+    const providedFields = Object.keys(payload);
+
+    if (!providedFields.length || providedFields.some((field) => !allowedFields.includes(field))) {
+      throw new Error('SET_ATTACK_CONFIG payload must include at least one valid attack config field.');
+    }
+
+    const nextConfig = {};
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'deviceCount')) {
+      if (!Number.isInteger(payload.deviceCount)
+        || payload.deviceCount < CONSTANTS.DEVICE_COUNT_MIN
+        || payload.deviceCount > CONSTANTS.DEVICE_COUNT_MAX) {
+        throw new Error('SET_ATTACK_CONFIG.deviceCount must be an integer within allowed range.');
+      }
+      nextConfig.deviceCount = payload.deviceCount;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'attackType')) {
+      if (!VALID_ATTACK_TYPES.has(payload.attackType)) {
+        throw new Error('SET_ATTACK_CONFIG.attackType must be one of the supported attack types.');
+      }
+      nextConfig.attackType = payload.attackType;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'bandwidthMultiplier')) {
+      if (typeof payload.bandwidthMultiplier !== 'number'
+        || Number.isNaN(payload.bandwidthMultiplier)
+        || payload.bandwidthMultiplier < CONSTANTS.BANDWIDTH_MULTIPLIER_MIN
+        || payload.bandwidthMultiplier > CONSTANTS.BANDWIDTH_MULTIPLIER_MAX) {
+        throw new Error('SET_ATTACK_CONFIG.bandwidthMultiplier must be a number within allowed range.');
+      }
+      nextConfig.bandwidthMultiplier = payload.bandwidthMultiplier;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'targetIP')) {
+      if (typeof payload.targetIP !== 'string' || !payload.targetIP.trim()) {
+        throw new Error('SET_ATTACK_CONFIG.targetIP must be a non-empty string.');
+      }
+      nextConfig.targetIP = payload.targetIP.trim();
+    }
+
+    this.store.updateState({
+      config: {
+        attack: nextConfig
+      }
+    });
+  }
+
+  applySetFirewallProtocolBlock(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_PROTOCOL_BLOCK);
+    const { protocol, blocked } = payload;
+
+    if (!VALID_PROTOCOLS.has(protocol)) {
+      throw new Error('SET_FIREWALL_PROTOCOL_BLOCK requires a valid protocol.');
+    }
+    if (typeof blocked !== 'boolean') {
+      throw new Error('SET_FIREWALL_PROTOCOL_BLOCK requires a boolean blocked flag.');
+    }
+
+    if (blocked) {
+      this.firewall.blockedProtocols.add(protocol);
+      return;
+    }
+    this.firewall.blockedProtocols.delete(protocol);
+  }
+
+  applySetFirewallSubnetBlock(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_SUBNET_BLOCK);
+    const { subnet, blocked } = payload;
+
+    if (typeof subnet !== 'string' || !subnet.trim()) {
+      throw new Error('SET_FIREWALL_SUBNET_BLOCK requires a non-empty subnet string.');
+    }
+    if (typeof blocked !== 'boolean') {
+      throw new Error('SET_FIREWALL_SUBNET_BLOCK requires a boolean blocked flag.');
+    }
+
+    const normalizedSubnet = subnet.trim();
+    if (blocked) {
+      this.firewall.blockedIPs.add(normalizedSubnet);
+      return;
+    }
+    this.firewall.blockedIPs.delete(normalizedSubnet);
+  }
+
+  applySetFirewallRateLimitEnabled(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_ENABLED);
+    const { enabled } = payload;
+
+    if (typeof enabled !== 'boolean') {
+      throw new Error('SET_FIREWALL_RATE_LIMIT_ENABLED requires a boolean enabled flag.');
+    }
+
+    this.firewall.rateLimitEnabled = enabled;
+  }
+
+  applySetFirewallRateLimitThreshold(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_THRESHOLD);
+    const { threshold } = payload;
+
+    if (!Number.isInteger(threshold)
+      || threshold < CONSTANTS.RATE_LIMIT_MIN
+      || threshold > CONSTANTS.RATE_LIMIT_MAX) {
+      throw new Error('SET_FIREWALL_RATE_LIMIT_THRESHOLD requires an integer threshold within allowed range.');
+    }
+
+    this.firewall.rateLimitThreshold = threshold;
+  }
+
+  applySetFirewallRateLimitScope(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_SCOPE);
+    const { scope } = payload;
+
+    if (typeof scope !== 'string' || !VALID_RATE_LIMIT_SCOPES.has(scope)) {
+      throw new Error('SET_FIREWALL_RATE_LIMIT_SCOPE requires a valid scope.');
+    }
+
+    this.firewall.rateLimitScope = scope;
+  }
+
+  applySetReverseProxyEnabled(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED);
+    const { enabled } = payload;
+
+    if (typeof enabled !== 'boolean') {
+      throw new Error('SET_REVERSE_PROXY_ENABLED requires a boolean enabled flag.');
+    }
+
+    this.server.setReverseProxyEnabled(enabled);
+  }
+
+  applySetLoadBalancingEnabled(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED);
+    const { enabled } = payload;
+
+    if (typeof enabled !== 'boolean') {
+      throw new Error('SET_LOAD_BALANCING_ENABLED requires a boolean enabled flag.');
+    }
+
+    this.firewall.loadBalancingEnabled = enabled;
+    this.writeStatePath(['config', 'defense', 'capacity', 'loadBalancingMultiplier'], enabled ? 2 : 1);
+  }
+
+  applySetServerCapacityMultiplier(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_SERVER_CAPACITY_MULTIPLIER);
+    const { multiplier } = payload;
+
+    if (typeof multiplier !== 'number'
+      || Number.isNaN(multiplier)
+      || multiplier < 0.5
+      || multiplier > 5) {
+      throw new Error('SET_SERVER_CAPACITY_MULTIPLIER requires a numeric multiplier within allowed range.');
+    }
+
+    this.server.bandwidthCapacityMultiplier = multiplier;
+  }
+
+  applySetProxyBadgeMode(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE);
+    const { mode } = payload;
+
+    if (mode !== 'ip' && mode !== 'count') {
+      throw new Error('SET_PROXY_BADGE_MODE requires mode to be "ip" or "count".');
+    }
+
+    this.proxyBadgeMode = mode;
   }
 
   update(dt) {
@@ -457,7 +742,10 @@ export default class Orchestrator {
   }
 
   setProxyBadgeMode(mode) {
-    this.proxyBadgeMode = mode === 'count' ? 'count' : 'ip';
+    this.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE,
+      payload: { mode: mode === 'count' ? 'count' : 'ip' }
+    });
   }
 
   bindCompatibilityAccessors() {
