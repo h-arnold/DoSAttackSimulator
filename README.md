@@ -159,14 +159,7 @@ Students will understand:
 4. Why simple IP filtering fails against large botnets
 5. The concept of false positives in security
 
-## License
-
-MIT
-
 ## Contributing
 
 This is an educational project for Bassaleg School. For issues or suggestions, please open a GitHub issue.
 
-## Acknowledgments
-
-Built to support WJEC GCSE Computer Science curriculum requirements.
