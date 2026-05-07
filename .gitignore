@@ -52,3 +52,4 @@ out/
 
 playwright-report/
 test-results/
+.playwright-mcp/

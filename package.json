@@ -10,7 +10,6 @@
     "test:visual": "playwright test",
     "test:visual:headed": "playwright test --headed",
     "test:visual:debug": "playwright test --debug",
-    "test:visual:update": "playwright test --update-snapshots",
     "serve": "http-server . -p 8080 -c-1"
   },
   "keywords": [
