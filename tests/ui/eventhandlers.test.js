@@ -271,7 +271,8 @@ describe('EventHandlers command translation (Section 2 / Phase 4)', () => {
       payload: { enabled: true }
     });
     expect(uiManager.updateAddressing).toHaveBeenCalledWith(true);
-    expect(uiManager.updateServerIPs).toHaveBeenCalledWith(orchestrator.server.publicIP, orchestrator.server.originIP);
+    const state = orchestrator.getState();
+    expect(uiManager.updateServerIPs).toHaveBeenCalledWith(state.server.publicIP, state.server.originIP);
 
     const loadBalancing = dom.window.document.getElementById('check-load-balancing');
     loadBalancing.checked = true;

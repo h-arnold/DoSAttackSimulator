@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import Orchestrator from '../../js/core/Orchestrator.js';
+import Orchestrator, { ORCHESTRATOR_COMMAND_TYPES } from '../../js/core/Orchestrator.js';
 import { ATTACK_TYPES, PACKET_TYPES } from '../../js/constants.js';
 import defaultSimulationState from '../../js/state/defaultSimulationState.js';
 import SimulationStore from '../../js/state/SimulationStore.js';
@@ -55,10 +55,16 @@ describe('Orchestrator state contract characterization', () => {
     orchestrator.attacker.isAttacking = true;
     orchestrator.analyzerLogBudget = 2;
     orchestrator.setProxyBadgeMode('count');
-    orchestrator.server.setReverseProxyEnabled(true);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.firewall.rateLimitEnabled = true;
     orchestrator.firewall.rateLimitThreshold = 30;
-    orchestrator.firewall.loadBalancingEnabled = true;
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.store.updateState({
       runtime: {
         traffic: {
@@ -86,10 +92,11 @@ describe('Orchestrator state contract characterization', () => {
     expect(orchestrator.attacker.isAttacking).toBe(false);
     expect(orchestrator.store.getState()).toEqual(defaults);
     expect(orchestrator.getState().networkNodes.proxy.badgeMode).toBe(defaults.config.display.proxyBadgeMode);
-    expect(orchestrator.server.reverseProxyEnabled).toBe(defaults.config.defense.topology.reverseProxyEnabled);
+    expect(orchestrator.getState().server.reverseProxyEnabled).toBe(defaults.config.defense.topology.reverseProxyEnabled);
     expect(orchestrator.firewall.rateLimitEnabled).toBe(defaults.config.defense.firewall.rateLimit.enabled);
     expect(orchestrator.firewall.rateLimitThreshold).toBe(defaults.config.defense.firewall.rateLimit.threshold);
-    expect(orchestrator.firewall.loadBalancingEnabled).toBe(defaults.config.defense.capacity.loadBalancingEnabled);
+    expect(orchestrator.store.getState().config.defense.capacity.loadBalancingEnabled)
+      .toBe(defaults.config.defense.capacity.loadBalancingEnabled);
   });
 
   it('reset replaces nested default branches and drops stale runtime references', () => {
@@ -125,8 +132,14 @@ describe('Orchestrator state contract characterization', () => {
   });
 
   it('exposes the renderer and UI snapshot shape through getState', () => {
-    orchestrator.server.reverseProxyEnabled = true;
-    orchestrator.firewall.loadBalancingEnabled = true;
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.isSimulationRunning = true;
     orchestrator.update(0.1);
 
@@ -156,8 +169,14 @@ describe('Orchestrator state contract characterization', () => {
         blockedIPs: expect.any(Array),
         rateLimitEnabled: expect.any(Boolean),
         rateLimitThreshold: expect.any(Number),
-        loadBalancingEnabled: true,
         detectedSubnets: expect.any(Array)
+      }),
+      capacity: expect.objectContaining({
+        serverCapacityMultiplier: expect.any(Number),
+        loadBalancingEnabled: true,
+        loadBalancingMultiplier: expect.any(Number),
+        effectiveCapacityMultiplier: expect.any(Number),
+        loadBalancingApplied: expect.any(Boolean)
       }),
       particles: orchestrator.particles,
       analyzerLogs: orchestrator.analyzerLogs,
@@ -268,7 +287,10 @@ describe('Orchestrator state contract characterization', () => {
     orchestrator.particles = [{ id: 'particle-compat' }];
     orchestrator.analyzerLogs = [{ action: 'ALLOWED' }];
     orchestrator.attacker.isAttacking = true;
-    orchestrator.server.setReverseProxyEnabled(true);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.firewall.rateLimitEnabled = true;
 
     const state = orchestrator.store.getState();
@@ -312,7 +334,7 @@ describe('Orchestrator state contract characterization', () => {
     expect(orchestrator.particles).toEqual([{ id: 'store-particle' }]);
     expect(orchestrator.analyzerLogs).toEqual([expect.objectContaining({ action: 'DROPPED' })]);
     expect(orchestrator.getState().networkNodes.proxy.badgeMode).toBe('ip');
-    expect(orchestrator.server.reverseProxyEnabled).toBe(false);
+    expect(orchestrator.getState().server.reverseProxyEnabled).toBe(false);
     expect(orchestrator.firewall.rateLimitEnabled).toBe(false);
   });
 });

@@ -3,6 +3,8 @@ import GenuineTraffic from '../models/GenuineTraffic.js';
 import Attacker from '../models/Attacker.js';
 import Server from '../models/Server.js';
 import Firewall from '../models/Firewall.js';
+import { calculateEffectiveCapacity } from '../models/capacityConfig.js';
+import { decideTopologyRoute, projectTopologyAddressing } from '../models/topologyConfig.js';
 import defaultSimulationState from '../state/defaultSimulationState.js';
 import SimulationStore from '../state/SimulationStore.js';
 import { abbreviateNumber } from '../utils.js';
@@ -318,7 +320,11 @@ export default class Orchestrator {
       throw new Error('SET_REVERSE_PROXY_ENABLED requires a boolean enabled flag.');
     }
 
-    this.server.setReverseProxyEnabled(enabled);
+    const topology = this.getTopologyConfig();
+    const projection = projectTopologyAddressing({ ...topology, reverseProxyEnabled: enabled });
+
+    this.writeStatePath(['config', 'defense', 'topology', 'reverseProxyEnabled'], enabled);
+    this.writeStatePath(['config', 'defense', 'topology', 'publicIP'], projection.publicEntryIP);
   }
 
   applySetLoadBalancingEnabled(command) {
@@ -329,7 +335,7 @@ export default class Orchestrator {
       throw new Error('SET_LOAD_BALANCING_ENABLED requires a boolean enabled flag.');
     }
 
-    this.firewall.loadBalancingEnabled = enabled;
+    this.writeStatePath(['config', 'defense', 'capacity', 'loadBalancingEnabled'], enabled);
     this.writeStatePath(['config', 'defense', 'capacity', 'loadBalancingMultiplier'], enabled ? 2 : 1);
   }
 
@@ -344,7 +350,7 @@ export default class Orchestrator {
       throw new Error('SET_SERVER_CAPACITY_MULTIPLIER requires a numeric multiplier within allowed range.');
     }
 
-    this.server.bandwidthCapacityMultiplier = multiplier;
+    this.writeStatePath(['config', 'defense', 'capacity', 'serverCapacityMultiplier'], multiplier);
   }
 
   applySetProxyBadgeMode(command) {
@@ -366,6 +372,12 @@ export default class Orchestrator {
     }
 
     this.syncGenuineTrafficUsers();
+    const frameConfig = {
+      topology: this.getTopologyConfig(),
+      firewallPolicy: this.getFirewallPolicyConfig(),
+      capacity: this.getCapacityConfig()
+    };
+    const topologyProjection = projectTopologyAddressing(frameConfig.topology);
 
     // Server decay
     this.server.update(dt);
@@ -373,38 +385,42 @@ export default class Orchestrator {
     // Spawn genuine traffic if simulation is running
     if (this.isSimulationRunning) {
       const genuinePackets = this.genuineTraffic.spawnPackets(dt);
-      // v1.2: Set destination IP to server's public IP
-      genuinePackets.forEach(p => p.destinationIP = this.server.publicIP);
-      this.addParticles(genuinePackets);
+      genuinePackets.forEach((packet) => {
+        packet.destinationIP = topologyProjection.publicEntryIP;
+      });
+      this.addParticles(genuinePackets, frameConfig.topology);
     }
 
     // Spawn attack traffic if attacking
     if (this.attacker.isAttacking) {
       const { packets: attackPackets } = this.attacker.spawnPackets(dt);
       // v1.2: Set destination IP to attacker's target IP
-      attackPackets.forEach(p => p.destinationIP = this.attacker.targetIP);
-      this.addParticles(attackPackets);
+      attackPackets.forEach((packet) => {
+        packet.destinationIP = this.attacker.targetIP;
+      });
+      this.addParticles(attackPackets, frameConfig.topology);
     }
 
     // Update particle positions and process arrivals
-    this.updateParticles(dt);
+    this.updateParticles(dt, frameConfig);
   }
 
-  addParticles(newPackets) {
+  addParticles(newPackets, topology = this.getTopologyConfig()) {
     for (const packet of newPackets) {
       if (this.particles.length >= CONSTANTS.MAX_ACTIVE_PARTICLES) {
         break;
       }
       // Initialize particle position based on cluster
-      this.initializeParticlePosition(packet);
+      this.initializeParticlePosition(packet, topology);
       this.particles.push(packet);
     }
   }
 
-  initializeParticlePosition(packet) {
+  initializeParticlePosition(packet, topology = this.getTopologyConfig()) {
     const centerY = CONSTANTS.CANVAS_HEIGHT / 2;
     const leftX = 80;
     const rightX = CONSTANTS.CANVAS_WIDTH - 80;
+    const topologyProjection = projectTopologyAddressing(topology);
     
     // Determine spawn cluster based on packet type
     let spawnX, spawnY, destX, destY;
@@ -427,7 +443,7 @@ export default class Orchestrator {
     spawnY += Math.sin(angle) * distance;
     
     // Determine destination
-    if (this.server.reverseProxyEnabled) {
+    if (topologyProjection.reverseProxyEnabled) {
       // Destination is proxy node when proxy enabled
       const pipeStartX = (CONSTANTS.CANVAS_WIDTH - CONSTANTS.PIPE_WIDTH) / 2;
       destX = pipeStartX + (CONSTANTS.PIPE_WIDTH * 0.85);
@@ -457,12 +473,17 @@ export default class Orchestrator {
     }
   }
 
-  updateParticles(dt) {
+  updateParticles(dt, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
     const remaining = [];
     const pipeEndX = CONSTANTS.CANVAS_WIDTH;
     const pipeStartX = (CONSTANTS.CANVAS_WIDTH - CONSTANTS.PIPE_WIDTH) / 2;
     const proxyX = pipeStartX + (CONSTANTS.PIPE_WIDTH * 0.85);
     const rightX = CONSTANTS.CANVAS_WIDTH - 80;
+    const topologyProjection = projectTopologyAddressing(frameConfig.topology);
 
     for (const particle of this.particles) {
       // Use velocity vector if available, otherwise fall back to horizontal movement
@@ -471,7 +492,7 @@ export default class Orchestrator {
         particle.y += particle.vy * dt;
         
         // Update destination after passing proxy
-        if (this.server.reverseProxyEnabled && particle.hasPassedProxy && !particle.destinationUpdated) {
+        if (topologyProjection.reverseProxyEnabled && particle.hasPassedProxy && !particle.destinationUpdated) {
           particle.destinationUpdated = true;
           const centerY = CONSTANTS.CANVAS_HEIGHT / 2;
           const dx = rightX - particle.x;
@@ -487,11 +508,11 @@ export default class Orchestrator {
         particle.x += particle.speed * dt;
       }
 
-      if (this.processProxyCheckpoint(particle, proxyX)) {
+      if (this.processProxyCheckpoint(particle, proxyX, frameConfig)) {
         continue;
       }
 
-      if (this.processServerEdge(particle, rightX)) {
+      if (this.processServerEdge(particle, rightX, frameConfig)) {
         continue;
       }
 
@@ -505,27 +526,36 @@ export default class Orchestrator {
     this.particles = remaining;
   }
 
-  processProxyCheckpoint(particle, proxyX) {
-    if (!this.server.reverseProxyEnabled || particle.hasPassedProxy || particle.x < proxyX) {
+  processProxyCheckpoint(particle, proxyX, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
+    const projection = projectTopologyAddressing(frameConfig.topology);
+    if (!projection.reverseProxyEnabled || particle.hasPassedProxy || particle.x < proxyX) {
       return false;
     }
 
     particle.hasPassedProxy = true;
-    this.runInspection(particle);
+    this.runInspection(particle, frameConfig);
     return particle.blockedByFirewall || particle.missedTarget;
   }
 
-  processServerEdge(particle, pipeEndX) {
+  processServerEdge(particle, pipeEndX, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
     if (particle.x < pipeEndX) {
       return false;
     }
 
-    if (!this.server.reverseProxyEnabled) {
-      this.runInspection(particle);
+    if (!projectTopologyAddressing(frameConfig.topology).reverseProxyEnabled) {
+      this.runInspection(particle, frameConfig);
     }
 
     if (!particle.blockedByFirewall && !particle.missedTarget && !particle.droppedByCollision) {
-      this.processServerArrival(particle);
+      this.processServerArrival(particle, frameConfig);
     }
 
     return true;
@@ -556,44 +586,35 @@ export default class Orchestrator {
 
   // Exposed for tests: process a single packet arrival through proxy + server path
   processArrival(particle) {
+    const frameConfig = {
+      topology: this.getTopologyConfig(),
+      firewallPolicy: this.getFirewallPolicyConfig(),
+      capacity: this.getCapacityConfig()
+    };
     // If proxy was never crossed (e.g., direct invocation), flag it to reuse proxy logic
-    if (this.server.reverseProxyEnabled && !particle.hasPassedProxy) {
+    if (projectTopologyAddressing(frameConfig.topology).reverseProxyEnabled && !particle.hasPassedProxy) {
       particle.hasPassedProxy = true;
     }
 
-    this.runInspection(particle);
+    this.runInspection(particle, frameConfig);
 
     if (!particle.blockedByFirewall && !particle.missedTarget && !particle.droppedByCollision) {
-      this.processServerArrival(particle);
+      this.processServerArrival(particle, frameConfig);
     }
   }
 
-  runInspection(particle) {
-    // v1.2: Check if packet is targeting the correct IP
-    // If reverse proxy is enabled, only packets to public IP reach the proxy
-    if (this.server.reverseProxyEnabled) {
-      // If packet destination doesn't match public IP, it doesn't reach the proxy
-      if (particle.destinationIP !== this.server.publicIP) {
-        particle.missedTarget = true;
-        this.logAnalyzerEvent({
-          ip: particle.sourceIP,
-          type: particle.type,
-          action: 'MISSED',
-          reason: 'WRONG_IP'
-        });
-        return;
-      }
-      
-      // Packet reached proxy - mark as forwarded and preserve clientIP
-      if (!particle.clientIP) {
-        particle.clientIP = particle.sourceIP;
-      }
-      // Change sourceIP to proxy egress IP (random host in proxy egress network)
-      const proxyEgressHost = Math.floor(Math.random() * 254) + 1; // 1-254 (valid host addresses)
-      particle.sourceIP = `${CONSTANTS.PROXY_EGRESS_IP_PREFIX}.${proxyEgressHost}`;
-      particle.isForwarded = true; // Mark for visualization
-    } else if (particle.destinationIP !== this.server.publicIP) {
-      // No proxy, packet must match public IP
+  runInspection(particle, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
+    const route = decideTopologyRoute({
+      topology: frameConfig.topology,
+      sourceIP: particle.sourceIP,
+      clientIP: particle.clientIP
+    });
+
+    if (particle.destinationIP !== route.initialDestinationIP) {
       particle.missedTarget = true;
       this.logAnalyzerEvent({
         ip: particle.sourceIP,
@@ -604,9 +625,21 @@ export default class Orchestrator {
       });
       return;
     }
+
+    if (route.routeMode === 'REVERSE_PROXY') {
+      if (!particle.clientIP) {
+        particle.clientIP = route.clientIP;
+      }
+      particle.sourceIP = route.originSourceIP;
+      particle.isForwarded = true;
+    }
     
     // Firewall inspection
-    const firewallResult = this.firewall.inspect(particle);
+    const firewallResult = this.firewall.inspect(
+      particle,
+      Date.now() / 1000,
+      frameConfig.firewallPolicy
+    );
     
     if (!firewallResult.allowed) {
       // Firewall blocked packet
@@ -626,7 +659,11 @@ export default class Orchestrator {
     }
   }
 
-  processServerArrival(particle) {
+  processServerArrival(particle, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
     if (this.server.status === 'CRASHED') {
       if (!particle.isMalicious) {
         this.server.recordDroppedPacket(particle.trafficWeight || 1);
@@ -639,7 +676,7 @@ export default class Orchestrator {
         weight: particle.trafficWeight
       });
     } else {
-      const serverResult = this.server.receive(particle);
+      const serverResult = this.server.receive(particle, { capacity: frameConfig.capacity });
       const action = serverResult.allowed ? 'ALLOWED' : 'DROPPED';
 
       this.logAnalyzerEvent({
@@ -693,8 +730,11 @@ export default class Orchestrator {
         blockedIPs: state.config.defense.firewall.blockedSubnets,
         rateLimitEnabled: state.config.defense.firewall.rateLimit.enabled,
         rateLimitThreshold: state.config.defense.firewall.rateLimit.threshold,
-        loadBalancingEnabled: state.config.defense.capacity.loadBalancingEnabled,
         detectedSubnets: state.runtime.traffic.detectedSubnets
+      },
+      capacity: {
+        ...state.config.defense.capacity,
+        ...calculateEffectiveCapacity(state.config.defense.capacity)
       },
       particles: state.runtime.traffic.particles,
       analyzerLogs: state.runtime.metrics.analyzerSample.logs,
@@ -790,9 +830,6 @@ export default class Orchestrator {
     this.bindStoreBackedProperty(this.server, 'droppedPacketEvents', ['runtime', 'server', 'droppedPacketEvents'], (value) => Array.isArray(value) ? value : []);
     this.bindStoreBackedProperty(this.server, 'happinessScore', ['runtime', 'server', 'happinessScore']);
     this.bindStoreBackedProperty(this.server, 'bandwidthCapacityMultiplier', ['config', 'defense', 'capacity', 'serverCapacityMultiplier']);
-    this.bindStoreBackedProperty(this.server, 'originIP', ['config', 'defense', 'topology', 'originIP']);
-    this.bindStoreBackedProperty(this.server, 'publicIP', ['config', 'defense', 'topology', 'publicIP']);
-    this.bindStoreBackedProperty(this.server, 'reverseProxyEnabled', ['config', 'defense', 'topology', 'reverseProxyEnabled'], Boolean);
     Object.defineProperty(this.server, 'droppedPackets', {
       configurable: true,
       enumerable: true,
@@ -808,7 +845,6 @@ export default class Orchestrator {
     this.bindStoreBackedProperty(this.firewall, 'rateLimitThreshold', ['config', 'defense', 'firewall', 'rateLimit', 'threshold']);
     this.bindStoreBackedProperty(this.firewall, 'rateLimitScope', ['config', 'defense', 'firewall', 'rateLimit', 'scope']);
     this.bindStoreBackedProperty(this.firewall, 'rateLimitEnabled', ['config', 'defense', 'firewall', 'rateLimit', 'enabled'], Boolean);
-    this.bindStoreBackedProperty(this.firewall, 'loadBalancingEnabled', ['config', 'defense', 'capacity', 'loadBalancingEnabled'], Boolean);
   }
 
   syncGenuineTrafficUsers() {
@@ -824,6 +860,22 @@ export default class Orchestrator {
 
   createStoreBackedSet(path) {
     return new StoreBackedSetView(() => this.readStatePath(path));
+  }
+
+  getTopologyConfig() {
+    return this.readStatePath(['config', 'defense', 'topology']);
+  }
+
+  getFirewallPolicyConfig() {
+    return this.readStatePath(['config', 'defense', 'firewall']);
+  }
+
+  getCapacityConfig() {
+    const capacity = this.readStatePath(['config', 'defense', 'capacity']);
+    return {
+      ...capacity,
+      ...calculateEffectiveCapacity(capacity)
+    };
   }
 
   bindStoreBackedProperty(target, property, path, normalize = (value) => value) {

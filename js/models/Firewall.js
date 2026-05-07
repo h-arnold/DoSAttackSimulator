@@ -1,84 +1,54 @@
-import { PROTOCOLS, PACKET_TYPES, CONSTANTS } from '../constants.js';
-import { extractSubnet } from '../utils.js';
-
-const RATE_LIMIT_WINDOW_SECONDS = 1;
-
-function mapTypeToProtocol(type) {
-  if (type === PACKET_TYPES.HTTP_GET || type === PACKET_TYPES.TCP_SYN) return PROTOCOLS.TCP;
-  if (type === PACKET_TYPES.UDP) return PROTOCOLS.UDP;
-  if (type === PACKET_TYPES.ICMP) return PROTOCOLS.ICMP;
-  return undefined;
-}
+import { CONSTANTS } from '../constants.js';
+import { evaluateFirewallPolicy } from './firewallPolicy.js';
 
 export default class Firewall {
   constructor({
+    blockedProtocols = [],
+    blockedIPs = [],
     rateLimitThreshold = CONSTANTS.RATE_LIMIT_DEFAULT,
     rateLimitScope = 'ALL',
     rateLimitEnabled = false,
-    dashboardOpen = false,
-    loadBalancingEnabled = false
+    rateLimitWindowSeconds = 1
   } = {}) {
-    this.blockedProtocols = new Set();
-    this.blockedIPs = new Set();
+    this.blockedProtocols = new Set(blockedProtocols);
+    this.blockedIPs = new Set(blockedIPs);
     this.detectedSubnets = new Set();
     this.rateLimitThreshold = rateLimitThreshold;
-    this.rateLimitScope = rateLimitScope; // 'ALL' or specific protocol
+    this.rateLimitScope = rateLimitScope;
     this.rateLimitEnabled = rateLimitEnabled;
-    this.dashboardOpen = dashboardOpen;
-    this.loadBalancingEnabled = loadBalancingEnabled;
+    this.rateLimitWindowSeconds = rateLimitWindowSeconds;
     this.perIpCounters = new Map();
   }
 
-  isRateLimitActive() {
-    return this.rateLimitEnabled && this.dashboardOpen;
-  }
-
-  protocolMatchesScope(protocol) {
-    return this.rateLimitScope === 'ALL' || this.rateLimitScope === protocol;
-  }
-
-  getCounterKey(ip, protocol) {
-    return this.rateLimitScope === 'ALL' ? `${ip}|ALL` : `${ip}|${protocol}`;
-  }
-
-  resetWindowIfNeeded(counter, nowSeconds) {
-    if (nowSeconds - counter.windowStart >= RATE_LIMIT_WINDOW_SECONDS) {
-      counter.windowStart = nowSeconds;
-      counter.count = 0;
-    }
-  }
-
-  inspect(packet, nowSeconds = Date.now() / 1000) {
-    const protocol = mapTypeToProtocol(packet.type);
-    
-    // v1.2: Use clientIP for IP-based controls when available (reverse proxy scenario)
-    // Otherwise fall back to sourceIP
-    const effectiveIP = packet.clientIP || packet.sourceIP;
-    const subnet = extractSubnet(effectiveIP);
-    
-    // Track subnet from the effective IP (client if available, otherwise source)
-    this.detectedSubnets.add(subnet);
-
-    if (protocol && this.blockedProtocols.has(protocol)) {
-      return { allowed: false, reason: 'BLOCK_PROTOCOL' };
-    }
-
-    if (this.blockedIPs.has(subnet)) {
-      return { allowed: false, reason: 'BLOCK_IP' };
-    }
-
-    if (this.isRateLimitActive() && protocol && this.protocolMatchesScope(protocol)) {
-      const key = this.getCounterKey(effectiveIP, protocol);
-      const counter = this.perIpCounters.get(key) || { count: 0, windowStart: nowSeconds };
-      this.resetWindowIfNeeded(counter, nowSeconds);
-      counter.count += 1;
-      this.perIpCounters.set(key, counter);
-      if (counter.count > this.rateLimitThreshold) {
-        return { allowed: false, reason: 'RATE_LIMIT' };
+  getPolicyConfig() {
+    return {
+      blockedProtocols: Array.from(this.blockedProtocols),
+      blockedSubnets: Array.from(this.blockedIPs),
+      rateLimit: {
+        enabled: this.rateLimitEnabled,
+        threshold: this.rateLimitThreshold,
+        scope: this.rateLimitScope,
+        windowSeconds: this.rateLimitWindowSeconds
       }
-    }
+    };
+  }
 
-    return { allowed: true, reason: 'ALLOWED' };
+  inspect(packet, nowSeconds = Date.now() / 1000, policyConfig = this.getPolicyConfig()) {
+    const result = evaluateFirewallPolicy({
+      packetType: packet.type,
+      sourceIP: packet.sourceIP,
+      clientIP: packet.clientIP,
+      nowSeconds,
+      policy: policyConfig,
+      rateLimitCounters: this.perIpCounters
+    });
+
+    if (result.effectiveSubnet) {
+      this.detectedSubnets.add(result.effectiveSubnet);
+    }
+    this.perIpCounters = result.rateLimitCounters;
+
+    return { allowed: result.allowed, reason: result.reason };
   }
 
   getDetectedSubnets() {

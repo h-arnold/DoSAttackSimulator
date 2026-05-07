@@ -1,10 +1,10 @@
 # **Functional Specification: Interactive DoS/DDoS Attack Simulator**
 
 ---
-Spec-Version: 1.5.0
-Last-Updated: 2026-01-08
+Spec-Version: 1.5.3
+Last-Updated: 2026-05-07
 Changelog: CHANGELOG.md
-Summary: Improves network visualization with trajectory-based particle spawning, cluster rendering for multi-device nodes, and adds Playwright visual regression tests with MCP integration
+Summary: Cleans up stale cross-domain adapters so firewall remains policy-only while topology/capacity stay explicit inputs
 ---
 
 ## **1\. Pedagogical Overview & Curriculum Links**
@@ -173,6 +173,14 @@ The simulator operates as a fully open sandbox. Students are not guided through 
 
 * **Server Bandwidth Capacity:** Slider allows upgrading the server connection (e.g., increasing the size of the "pipe" from 100Mbps to 10Gbps).  
   * *Pedagogical Value:* Demonstrates that buying more bandwidth ("Scaling Up") is a valid mitigation for Volume attacks, though often expensive.
+* **Capacity Ownership (v1.5.2):** Effective capacity is computed from explicit capacity configuration (`serverCapacityMultiplier`, `loadBalancingEnabled`, `loadBalancingMultiplier`) and passed into server load handling, rather than inferred from hidden mutable server ownership.
+* **Separation Cleanup (v1.5.3):** Capacity flags are not mirrored under firewall state. Rendering and integration read load-balancing from the explicit capacity branch.
+
+### **Topology Ownership (v1.5.2)**
+
+* Route and addressing decisions are derived from explicit topology configuration (`reverseProxyEnabled`, `publicIP`, `originIP`, `proxyPublicIP`, `proxyEgressPrefix`) using topology helpers.
+* Reverse-proxy forwarding behavior remains the same pedagogically (Public IP check, client IP preservation, proxy egress rewrite), but routing decisions are no longer split across server/firewall/UI ownership.
+* **Separation Cleanup (v1.5.3):** The server model no longer owns reverse-proxy addressing fields or mutators; topology remains authoritative in the defense topology branch and in topology helpers.
 
 ### **Genuine User Traffic**
 
@@ -564,14 +572,15 @@ The mitigation engine.
   * blockedProtocols: Set of Enum (TCP, UDP, ICMP).  
   * rateLimitEnabled: Boolean.  
   * rateLimitThreshold: Integer (requests/sec, default 20).  
-  * rateLimitProtocols: Set of Enum (TCP, UDP, ICMP) OR the special value "ALL" (default: ALL).  
-  * rateLimitCounters: Map of IP → {count, lastReset}.  
-  * loadBalancingEnabled: Boolean.  
-* **Method inspect(packet):**  
+  * rateLimitScope: Enum (TCP, UDP, ICMP) OR the special value "ALL" (default: ALL).  
+  * rateLimitWindowSeconds: Number (default: 1 second).  
+  * rateLimitCounters: Map of key → {count, windowStart}, where key is `IP|ALL` or `IP|<protocol>` depending on scope.  
+* **Method inspect(packet, nowSeconds, policyConfig):**  
   * Checks protocol against blockedProtocols.  
   * Checks IP subnet against blockedIPs (extracts first 3 octets).
   * **Clarification (v1.2):** When Reverse Proxy is enabled and `clientIP` is present, IP-based blocking/rate limiting should use the **client IP** (end-user/bot) rather than the proxy egress IP. If `clientIP` is not present, IP-based controls act on the observed `sourceIP` (proxy), illustrating the loss of per-client visibility.
-  * If rateLimitEnabled, checks if IP exceeds threshold (resets counter each second). Rate limiting is applied only if the packet protocol is within `rateLimitProtocols` (or `ALL`).  
+  * Firewall decisions are evaluated from explicit policy config (`blockedProtocols`, `blockedSubnets`, `rateLimit`) plus explicit clock input (`nowSeconds`).
+  * If `rateLimit.enabled`, checks if IP exceeds threshold in the configured window. Rate limiting is applied only if the packet protocol matches `rateLimit.scope` (or `ALL`).  
   * Returns Object: `{allowed: Boolean, reason: String}`.  
   * Logs decisions to the Traffic Analyzer (see logging clarification below).  
 * **Method getDetectedSubnets():** Returns list of all unique /24 subnets seen in traffic (for UI display).
@@ -579,7 +588,7 @@ The mitigation engine.
 **Clarifications (v1):**
 
 * **Protocol mapping:** Blocking **TCP** blocks both **HTTP_GET** (legitimate web traffic) and **TCP SYN** (attack traffic).
-* **Rate limit scope:** Rate limiting is only active when the Firewall dashboard is enabled/open in the UI, and can be configured to apply to **ALL** protocols or a selected subset (TCP/UDP/ICMP).
+* **Rate limit scope:** Rate limiting is active when policy enables it, and can be configured to apply to **ALL** protocols or a selected subset (TCP/UDP/ICMP).
 * **Traffic Analyzer logging:** To avoid UI lockups, the analyzer logs at most `UI_ANALYZER_LOG_MAX_PER_SECOND` entries per second. (Prefer logging BLOCKED/DROPPED events; sample ALLOWED events if there is remaining budget.)
 * **Aggregate badges (v1.3):** Analyzer counters and any per-protocol tallies should use the same aggregate values shown in the attacker/legit badges (e.g., abbreviate 1,000 as 1k) so the numbers stay consistent across UI and metrics. Logs may append the packet visual scale prefix (e.g., “×100”) to reflect weighted entries.
 

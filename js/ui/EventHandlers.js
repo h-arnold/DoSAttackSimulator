@@ -267,7 +267,8 @@ export default class EventHandlers {
           payload: { enabled }
         });
         this.uiManager.updateAddressing(enabled);
-        this.uiManager.updateServerIPs(this.orchestrator.server.publicIP, this.orchestrator.server.originIP);
+        const state = this.orchestrator.getState();
+        this.uiManager.updateServerIPs(state.server.publicIP, state.server.originIP);
       });
     }
   }

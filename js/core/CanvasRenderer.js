@@ -241,7 +241,7 @@ export default class CanvasRenderer {
     this.clear();
     
     const load = Math.max(state.server.bandwidthUsage, state.server.cpuLoad);
-    this.drawPipes(load, state.firewall.loadBalancingEnabled, state.server.reverseProxyEnabled);
+    this.drawPipes(load, state.capacity?.loadBalancingEnabled, state.server.reverseProxyEnabled);
 
     this.drawNetworkNodes(state);
     

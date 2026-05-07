@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import Orchestrator from '../../js/core/Orchestrator.js';
+import Orchestrator, { ORCHESTRATOR_COMMAND_TYPES } from '../../js/core/Orchestrator.js';
 import { PACKET_TYPES, CONSTANTS } from '../../js/constants.js';
 import Packet from '../../js/models/Packet.js';
 
@@ -87,8 +87,10 @@ describe('Trajectory Computation', () => {
     });
 
     it('should point velocity toward proxy when reverse proxy enabled', () => {
-      orchestrator.server.reverseProxyEnabled = true;
-      orchestrator.server.publicIP = CONSTANTS.PROXY_PUBLIC_IP;
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+        payload: { enabled: true }
+      });
 
       const packet = new Packet({
         type: PACKET_TYPES.UDP,
@@ -111,7 +113,10 @@ describe('Trajectory Computation', () => {
     });
 
     it('should point velocity toward server when proxy disabled', () => {
-      orchestrator.server.reverseProxyEnabled = false;
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+        payload: { enabled: false }
+      });
 
       const packet = new Packet({
         type: PACKET_TYPES.HTTP_GET,

@@ -267,8 +267,8 @@ describe('Orchestrator dispatch contract (Phase 2)', () => {
       type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
       payload: { enabled: true }
     });
-    expect(orchestrator.server.reverseProxyEnabled).toBe(true);
-    expect(orchestrator.server.publicIP).toBe(CONSTANTS.PROXY_PUBLIC_IP);
+    expect(orchestrator.store.getState().config.defense.topology.reverseProxyEnabled).toBe(true);
+    expect(orchestrator.store.getState().config.defense.topology.publicIP).toBe(CONSTANTS.PROXY_PUBLIC_IP);
     expect(orchestrator.store.getState().config.defense.firewall).toEqual(baseline.firewall);
     expect(orchestrator.store.getState().config.defense.capacity).toEqual(baseline.capacity);
 
@@ -276,7 +276,7 @@ describe('Orchestrator dispatch contract (Phase 2)', () => {
       type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
       payload: { enabled: true }
     });
-    expect(orchestrator.firewall.loadBalancingEnabled).toBe(true);
+    expect(orchestrator.store.getState().config.defense.capacity.loadBalancingEnabled).toBe(true);
     expect(orchestrator.store.getState().config.defense.firewall).toEqual(baseline.firewall);
     expect(orchestrator.store.getState().config.defense.topology).toEqual(
       expect.objectContaining({

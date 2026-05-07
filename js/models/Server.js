@@ -1,5 +1,6 @@
 import { PACKET_TYPES, SERVER_STATUS, CONSTANTS } from '../constants.js';
 import { clamp } from '../utils.js';
+import { calculateEffectiveCapacity } from './capacityConfig.js';
 
 const LOAD_PER_PACKET = 1;
 export const DROPPED_PACKET_TTL_SECONDS = 10; // v1.1: dropped packets age out after 10 seconds
@@ -37,12 +38,21 @@ export default class Server {
       0,
       100
     );
-    // Keep legacy counter in sync for backward compatibility
     this.droppedPackets = activeDroppedWeight;
   }
 
-  receive(packet) {
+  getEffectiveCapacityMultiplier(capacityConfig = null) {
+    if (capacityConfig && typeof capacityConfig === 'object') {
+      const { effectiveCapacityMultiplier } = calculateEffectiveCapacity(capacityConfig);
+      return Math.max(effectiveCapacityMultiplier || 1, 0.0001);
+    }
+
+    return Math.max(this.bandwidthCapacityMultiplier || 1, 0.0001);
+  }
+
+  receive(packet, options = {}) {
     const weight = packet.trafficWeight || 1;
+    const effectiveCapacityMultiplier = this.getEffectiveCapacityMultiplier(options.capacity);
 
     if (packet.type === PACKET_TYPES.HTTP_GET) {
       const load = this.getCurrentLoad();
@@ -56,7 +66,7 @@ export default class Server {
 
     // Volume attacks (UDP/ICMP) target bandwidth - affected by bandwidth capacity
     if (packet.type === PACKET_TYPES.UDP || packet.type === PACKET_TYPES.ICMP) {
-      const effectiveLoad = (weight * LOAD_PER_PACKET) / this.bandwidthCapacityMultiplier;
+      const effectiveLoad = (weight * LOAD_PER_PACKET) / effectiveCapacityMultiplier;
       this.bandwidthUsage = clamp(this.bandwidthUsage + effectiveLoad, 0, 100);
     } 
     // Protocol attacks (TCP SYN) target CPU/RAM - NOT affected by bandwidth capacity
@@ -115,20 +125,6 @@ export default class Server {
     this.droppedPacketEvents = [];
     this.status = SERVER_STATUS.ONLINE;
     this.bandwidthCapacityMultiplier = 1;
-    // v1.2: Reset proxy state
-    this.originIP = CONSTANTS.VICTIM_ORIGIN_IP;
-    this.publicIP = CONSTANTS.VICTIM_PUBLIC_IP;
-    this.reverseProxyEnabled = CONSTANTS.REVERSE_PROXY_ENABLED;
-  }
-  
-  // v1.2: Toggle reverse proxy
-  setReverseProxyEnabled(enabled) {
-    this.reverseProxyEnabled = !!enabled; // Coerce to boolean
-    if (this.reverseProxyEnabled) {
-      this.publicIP = CONSTANTS.PROXY_PUBLIC_IP;
-    } else {
-      this.publicIP = CONSTANTS.VICTIM_PUBLIC_IP;
-    }
   }
   
   // v1.3: Record a dropped packet with TTL for happiness recovery (weighted)

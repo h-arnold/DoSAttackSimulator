@@ -2,6 +2,15 @@
 
 All notable changes to the specification are documented in this file.
 
+## [1.5.3] - 2026-05-07
+- Complete section-3 phase-6 cleanup: remove stale cross-domain adapters (server-owned reverse-proxy fields/mutators and firewall-mirrored load-balancing flag), and update renderer/orchestrator/tests to assert explicit firewall, topology, and capacity branch ownership without changing simulation behavior.
+
+## [1.5.2] - 2026-05-07
+- Refactor section-3 phase-4 ownership boundaries: server load now consumes explicit capacity input (via effective-capacity helper), and packet routing/addressing consumers now use explicit topology helper inputs for reverse-proxy and direct-path decisions while preserving classroom behavior.
+
+## [1.5.1] - 2026-05-07
+- Refine firewall ownership in `SPEC.md` so rate limiting is enforced from explicit firewall policy inputs (`enabled`, `threshold`, `scope`, `windowSeconds`) and explicit clock input, removing the stale dashboard-open activation dependency while preserving protocol/subnet blocking semantics.
+
 ## [1.5.0] - 2026-01-08
 - **Network Visualization Improvements:**
   - Implement trajectory-based particle spawning: particles now spawn from cluster areas (attacker top, legit bottom) with deterministic positions and velocity vectors
