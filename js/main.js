@@ -26,8 +26,8 @@ const gameLoop = new GameLoop((dt) => {
   // Get current state
   const state = orchestrator.getState();
   
-  // Update UI
-  uiManager.update(state);
+  // Update UI from projected snapshot
+  uiManager.render(state);
   
   // Update IP blacklist every 60 frames (~1 second at 60fps)
   frameCounter += 1;

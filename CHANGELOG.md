@@ -2,6 +2,9 @@
 
 All notable changes to the specification are documented in this file.
 
+## [1.6.0] - 2026-05-07
+- Implement section-6/7 completion: add pure `ViewModelProjector`-backed `Orchestrator.getState()` snapshots, make `UIManager.render(viewModel)` the primary projection render contract (with compatibility alias), and harden deterministic reset rehydration guarantees with dedicated Section 6/7 Vitest coverage (`viewmodelprojector`, `uimanager.render`, `ui.projection`, `orchestrator.reset`, `reset.comprehensive`).
+
 ## [1.5.6] - 2026-05-07
 - Implement section-4 phase-4 integration by wiring `MetricsCollector` into orchestrator outcome decision points (allowed/blocked/dropped/missed), projecting plain-data snapshots into `runtime.metrics`, and enforcing deterministic metric reset through the authoritative `RESET_SIMULATION` flow with integration coverage for each outcome and reset.
 

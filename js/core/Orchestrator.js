@@ -7,8 +7,8 @@ import { calculateEffectiveCapacity } from '../models/capacityConfig.js';
 import { decideTopologyRoute, projectTopologyAddressing } from '../models/topologyConfig.js';
 import defaultSimulationState from '../state/defaultSimulationState.js';
 import SimulationStore from '../state/SimulationStore.js';
-import { abbreviateNumber } from '../utils.js';
 import MetricsCollector from './MetricsCollector.js';
+import ViewModelProjector from './ViewModelProjector.js';
 
 class StoreBackedSetView {
   constructor(getValues) {
@@ -87,6 +87,7 @@ const VALID_RATE_LIMIT_SCOPES = new Set(['ALL', ...Object.values(PROTOCOLS)]);
 export default class Orchestrator {
   constructor() {
     this.store = new SimulationStore();
+    this.viewModelProjector = new ViewModelProjector();
     this.analyzerLogBudget = 0;
     this.bindCompatibilityAccessors();
     this.initializeModels();
@@ -712,55 +713,7 @@ export default class Orchestrator {
   getState() {
     const state = this.store.state;
     const aggregates = this.computeAggregates(state);
-    return {
-      server: {
-        bandwidthUsage: state.runtime.server.bandwidthUsage,
-        cpuLoad: state.runtime.server.cpuLoad,
-        status: state.runtime.server.status,
-        happinessScore: state.runtime.server.happinessScore,
-        droppedPackets: getWeightedTotal(state.runtime.server.droppedPacketEvents),
-        activeConnections: state.runtime.server.activeConnections.length,
-        activeConnectionWeight: aggregates.halfOpenWeighted,
-        publicIP: state.config.defense.topology.publicIP,
-        originIP: state.config.defense.topology.originIP,
-        reverseProxyEnabled: state.config.defense.topology.reverseProxyEnabled
-      },
-      attacker: {
-        deviceCount: state.config.attack.deviceCount,
-        attackType: state.config.attack.attackType,
-        isAttacking: state.runtime.control.attackRunning,
-        botnetRanges: state.runtime.traffic.botnetRanges
-      },
-      firewall: {
-        blockedProtocols: state.config.defense.firewall.blockedProtocols,
-        blockedIPs: state.config.defense.firewall.blockedSubnets,
-        rateLimitEnabled: state.config.defense.firewall.rateLimit.enabled,
-        rateLimitThreshold: state.config.defense.firewall.rateLimit.threshold,
-        detectedSubnets: state.runtime.traffic.detectedSubnets
-      },
-      capacity: {
-        ...state.config.defense.capacity,
-        ...calculateEffectiveCapacity(state.config.defense.capacity)
-      },
-      particles: state.runtime.traffic.particles,
-      analyzerLogs: state.runtime.metrics.analyzerSample.logs,
-      isSimulationRunning: state.runtime.control.simulationRunning,
-      aggregates,
-      networkNodes: {
-        attackerCount: state.config.attack.deviceCount,
-        legitUserCount: state.config.legitimateTraffic.userCount,
-        proxy: {
-          enabled: state.config.defense.topology.reverseProxyEnabled,
-          publicIP: state.config.defense.topology.publicIP,
-          badgeMode: state.config.display.proxyBadgeMode,
-          trafficLabel: abbreviateNumber(aggregates.activeWeighted)
-        },
-        origin: {
-          ip: state.config.defense.topology.originIP,
-          status: state.runtime.server.status
-        }
-      }
-    };
+    return this.viewModelProjector.project(state, { aggregates });
   }
 
   computeAggregates(state = this.store.state) {

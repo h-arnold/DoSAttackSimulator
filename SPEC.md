@@ -1,10 +1,10 @@
 # **Functional Specification: Interactive DoS/DDoS Attack Simulator**
 
 ---
-Spec-Version: 1.5.6
+Spec-Version: 1.6.0
 Last-Updated: 2026-05-07
 Changelog: CHANGELOG.md
-Summary: Integrates authoritative MetricsCollector outcome recording into orchestrator decision points and reset flow
+Summary: Introduces ViewModelProjector-backed UI snapshots and codifies deterministic reset rehydration guarantees
 ---
 
 ## **1\. Pedagogical Overview & Curriculum Links**
@@ -245,6 +245,26 @@ Section 4 phase 4 wires `MetricsCollector` into the authoritative frame pipeline
 * **Authoritative state projection:** After each recorded outcome, orchestrator writes a fresh plain-data snapshot into `runtime.metrics.totals` and `runtime.metrics.rollingWindow`.
 * **Plain-data safety:** Runtime metrics updates preserve analyzer sample counters/logs as plain data and do not expose mutable collector internals.
 * **Reset semantics:** `RESET_SIMULATION` and `orchestrator.reset()` rebuild defaults and reinitialize the collector so metrics are deterministically zeroed through the authoritative reset flow.
+
+### **View Model Projection Contract (v1.6.0)**
+
+Section 6 introduces a pure projector boundary so UI-facing state is emitted from one deterministic snapshot.
+
+* **Pure projection module:** `js/core/ViewModelProjector.js` projects authoritative store state into the UI-facing `getState()` view model.
+* **Schema groups:** projected output includes server, attacker, firewall, capacity, particles, analyzer logs, control flags, aggregates, and network node labels.
+* **Synchronized addressing labels:** duplicated public/origin IP labels are projected from a single topology source, preventing drift between server and node displays.
+* **Render contract:** `UIManager.render(viewModel)` is the primary UI update entry point; `update(...)` remains as compatibility alias while consuming the same projected payload.
+* **Command integration:** command-driven state changes and frame updates both render from projected snapshots, not from direct UI-to-model mutation.
+
+### **Reset Rehydration Guarantees (v1.6.0)**
+
+Section 7 formalizes reset as authoritative default-state replacement and projection refresh.
+
+* **Single replacement path:** `RESET_SIMULATION` rehydrates from `defaultSimulationState()` instead of piecemeal field clearing.
+* **Runtime clearing:** reset clears traffic particles, analyzer rows, metrics totals/windows, server runtime counters, and control flags through authoritative replacement.
+* **Config restoration:** reset restores attack, firewall, topology, capacity, and display configuration branches to defaults.
+* **Reference isolation:** nested runtime/config objects are rebuilt so stale pre-reset references are not retained.
+* **Determinism:** repeated reset operations are idempotent and produce stable state snapshots.
 
 ### **Packet Generation Rates**
 
