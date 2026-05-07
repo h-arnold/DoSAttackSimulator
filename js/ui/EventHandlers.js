@@ -237,9 +237,6 @@ export default class EventHandlers {
       this.elements.checkReverseProxy.addEventListener('change', (e) => {
         const enabled = e.target.checked;
         this.orchestrator.server.setReverseProxyEnabled(enabled);
-        if (this.orchestrator.firewall) {
-           this.orchestrator.firewall.reverseProxyEnabled = enabled; 
-        }
         this.uiManager.updateAddressing(enabled);
         this.uiManager.updateServerIPs(this.orchestrator.server.publicIP, this.orchestrator.server.originIP);
       });
