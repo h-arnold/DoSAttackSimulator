@@ -2,6 +2,15 @@
 
 All notable changes to the specification are documented in this file.
 
+## [1.5.6] - 2026-05-07
+- Implement section-4 phase-4 integration by wiring `MetricsCollector` into orchestrator outcome decision points (allowed/blocked/dropped/missed), projecting plain-data snapshots into `runtime.metrics`, and enforcing deterministic metric reset through the authoritative `RESET_SIMULATION` flow with integration coverage for each outcome and reset.
+
+## [1.5.5] - 2026-05-07
+- Implement section-4 phase-3 `MetricsCollector` as a deterministic authoritative ledger utility (allowed/blocked/dropped/missed outcome recording, lifetime count+weighted accumulation, rolling-window bucket aging, safe snapshot cloning, and reset behavior) with focused Vitest unit coverage while keeping it decoupled from orchestrator/UI integration.
+
+## [1.5.4] - 2026-05-07
+- Define section-4 phase-2 authoritative metrics ledger placeholder shape in defaults and tests: outcome totals (allowed/blocked/dropped/missed with count+weighted fields), rolling-window scaffold (`windowMs`, `totals`, `buckets`), and analyzer sample counters (`visibleCount`, `droppedByBudgetCount`) while keeping state plain-data serializable for store cloning/reset.
+
 ## [1.5.3] - 2026-05-07
 - Complete section-3 phase-6 cleanup: remove stale cross-domain adapters (server-owned reverse-proxy fields/mutators and firewall-mirrored load-balancing flag), and update renderer/orchestrator/tests to assert explicit firewall, topology, and capacity branch ownership without changing simulation behavior.
 

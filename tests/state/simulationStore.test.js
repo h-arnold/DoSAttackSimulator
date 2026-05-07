@@ -108,4 +108,41 @@ describe('SimulationStore', () => {
     expect(() => store.updateState([])).toThrow(TypeError);
     expect(store.getState()).toEqual(initialState);
   });
+
+  it('keeps metrics ledger serializable and isolated across update and reset paths', () => {
+    const store = new SimulationStore();
+
+    store.updateState({
+      runtime: {
+        metrics: {
+          totals: {
+            allowed: { count: 4, weighted: 400 }
+          },
+          analyzerSample: {
+            visibleCount: 3,
+            droppedByBudgetCount: 7,
+            logs: [{ action: 'ALLOWED', timestamp: 123 }]
+          }
+        }
+      }
+    });
+
+    const snapshot = store.getState().runtime.metrics;
+    expect(snapshot.totals.allowed).toEqual({ count: 4, weighted: 400 });
+    expect(snapshot.totals.missed).toEqual({ count: 0, weighted: 0 });
+    expect(snapshot.rollingWindow).toEqual({
+      windowMs: 10000,
+      totals: {
+        allowed: { count: 0, weighted: 0 },
+        blocked: { count: 0, weighted: 0 },
+        dropped: { count: 0, weighted: 0 },
+        missed: { count: 0, weighted: 0 }
+      },
+      buckets: []
+    });
+    expect(JSON.parse(JSON.stringify(snapshot))).toEqual(snapshot);
+
+    store.replaceState(defaultSimulationState());
+    expect(store.getState().runtime.metrics).toEqual(defaultSimulationState().runtime.metrics);
+  });
 });

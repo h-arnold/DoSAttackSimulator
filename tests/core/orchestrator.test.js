@@ -233,6 +233,33 @@ describe('Orchestrator', () => {
     expect(orchestrator.analyzerLogs[0].weight).toBe(200);
   });
 
+  it('records processed outcomes into authoritative runtime metrics', () => {
+    const destinationIP = orchestrator.store.getState().config.defense.topology.publicIP;
+
+    orchestrator.analyzerLogBudget = 5;
+    orchestrator.processArrival({
+      type: PACKET_TYPES.UDP,
+      sourceIP: '198.51.100.1',
+      destinationIP,
+      trafficWeight: 250,
+      isMalicious: true
+    });
+
+    const runtimeMetrics = orchestrator.store.getState().runtime.metrics;
+
+    expect(orchestrator.server.bandwidthUsage).toBeGreaterThan(0);
+    expect(orchestrator.analyzerLogs).toEqual([expect.objectContaining({ action: 'ALLOWED' })]);
+    expect(runtimeMetrics.totals).toEqual({
+      allowed: { count: 1, weighted: 250 },
+      blocked: { count: 0, weighted: 0 },
+      dropped: { count: 0, weighted: 0 },
+      missed: { count: 0, weighted: 0 }
+    });
+    expect(runtimeMetrics.rollingWindow.windowMs).toBe(10000);
+    expect(runtimeMetrics.rollingWindow.totals).toEqual(runtimeMetrics.totals);
+    expect(runtimeMetrics.rollingWindow.buckets.length).toBeGreaterThan(0);
+  });
+
   // v1.2 Tests: Destination IP assignment
   it('should assign server public IP to genuine packets', () => {
     orchestrator.isSimulationRunning = true;

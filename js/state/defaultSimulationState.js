@@ -1,5 +1,14 @@
 import { ATTACK_TYPES, CONSTANTS, SERVER_STATUS } from '../constants.js';
 
+function createZeroOutcomeLedger() {
+  return {
+    allowed: { count: 0, weighted: 0 },
+    blocked: { count: 0, weighted: 0 },
+    dropped: { count: 0, weighted: 0 },
+    missed: { count: 0, weighted: 0 }
+  };
+}
+
 export default function defaultSimulationState() {
   return {
     config: {
@@ -57,18 +66,16 @@ export default function defaultSimulationState() {
         happinessScore: 100
       },
       metrics: {
-        totals: {
-          allowed: 0,
-          blocked: 0,
-          dropped: 0
-        },
+        totals: createZeroOutcomeLedger(),
         rollingWindow: {
-          allowed: 0,
-          blocked: 0,
-          dropped: 0
+          windowMs: 10000,
+          totals: createZeroOutcomeLedger(),
+          buckets: []
         },
         analyzerSample: {
-          logs: []
+          logs: [],
+          visibleCount: 0,
+          droppedByBudgetCount: 0
         },
         analyzerDroppedCount: 0
       }

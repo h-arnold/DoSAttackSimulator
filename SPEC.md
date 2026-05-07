@@ -1,10 +1,10 @@
 # **Functional Specification: Interactive DoS/DDoS Attack Simulator**
 
 ---
-Spec-Version: 1.5.3
+Spec-Version: 1.5.6
 Last-Updated: 2026-05-07
 Changelog: CHANGELOG.md
-Summary: Cleans up stale cross-domain adapters so firewall remains policy-only while topology/capacity stay explicit inputs
+Summary: Integrates authoritative MetricsCollector outcome recording into orchestrator decision points and reset flow
 ---
 
 ## **1\. Pedagogical Overview & Curriculum Links**
@@ -200,6 +200,51 @@ The Happiness Score represents how well legitimate users are being served:
 * **Recovery:** Happiness recalculates in real-time using the formula above. As the number of dropped legitimate packets decreases (for example after the attack is mitigated and genuine traffic is being successfully served), Happiness will gradually recover toward 100%, clamped to 0-100. Recovery will not occur while genuine users are still being blocked by firewall rules. The `Reset Simulation` button still immediately restores Happiness to 100%.  
 * **Aggregate drop counting (v1.3):** `droppedPackets` is incremented by the packet’s `trafficWeight` (which already includes `PACKET_VISUAL_SCALE`), so happiness aligns with the aggregate badge counts and not just the number of rendered particles.
 * **False Positive Penalty:** If the firewall blocks a genuine user (172.16.0.x range), it counts as a dropped packet.  
+
+### **Authoritative Metrics Ledger Contract (v1.5.4)**
+
+`runtime.metrics` is an authoritative plain-data ledger placeholder that is safe for store cloning and reset.
+
+* **Totals:** `runtime.metrics.totals` tracks four outcome classes with count + weighted values:
+  * `allowed: { count, weighted }`
+  * `blocked: { count, weighted }`
+  * `dropped: { count, weighted }`
+  * `missed: { count, weighted }`
+* **Rolling window:** `runtime.metrics.rollingWindow` contains:
+  * `windowMs` (default `10000`)
+  * `totals` (same four-outcome `{ count, weighted }` structure as lifetime totals)
+  * `buckets` (array of plain-data bucket objects, initially empty)
+* **Analyzer sample counters:** `runtime.metrics.analyzerSample` contains:
+  * `logs` (visible analyzer entries)
+  * `visibleCount` (number of visible entries admitted by budget)
+  * `droppedByBudgetCount` (entries omitted due to sample budget)
+* **Compatibility field:** `runtime.metrics.analyzerDroppedCount` remains as a numeric compatibility counter during migration.
+
+This shape remains the runtime target for authoritative metrics state.
+
+### **MetricsCollector Utility (v1.5.5)**
+
+Section 4 phase 3 introduces a standalone `MetricsCollector` utility in `js/core/MetricsCollector.js` for authoritative outcome accounting.
+
+* **Supported outcomes:** `allowed`, `blocked`, `dropped`, `missed`.
+* **Record API:** deterministic recording via explicit `recordOutcome(outcome, { weight, timestampMs })` inputs (timestamp defaults are available but tests use explicit time values).
+* **Lifetime totals:** collector maintains cumulative `{ count, weighted }` totals per outcome.
+* **Rolling window:** collector keeps time buckets and returns a rolling-window snapshot (`windowMs`, per-outcome totals, bucket entries) bounded to the configured time range.
+* **Snapshot safety:** `getSnapshot(...)` returns plain-data clones so callers cannot mutate collector internals through returned objects.
+* **Reset:** `reset()` clears lifetime and rolling-window state while preserving collector configuration (`windowMs`, `bucketMs`).
+
+### **Orchestrator Metrics Integration (v1.5.6)**
+
+Section 4 phase 4 wires `MetricsCollector` into the authoritative frame pipeline where outcomes are actually decided.
+
+* **Decision-point recording:**
+  * `missed` recorded when destination IP validation fails during topology routing.
+  * `blocked` recorded when firewall policy denies a packet.
+  * `dropped` recorded for legitimate collision drops and server-side dropped arrivals (including crashed/overload rejections).
+  * `allowed` recorded when the server accepts arrival processing.
+* **Authoritative state projection:** After each recorded outcome, orchestrator writes a fresh plain-data snapshot into `runtime.metrics.totals` and `runtime.metrics.rollingWindow`.
+* **Plain-data safety:** Runtime metrics updates preserve analyzer sample counters/logs as plain data and do not expose mutable collector internals.
+* **Reset semantics:** `RESET_SIMULATION` and `orchestrator.reset()` rebuild defaults and reinitialize the collector so metrics are deterministically zeroed through the authoritative reset flow.
 
 ### **Packet Generation Rates**
 

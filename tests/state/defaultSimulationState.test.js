@@ -26,6 +26,13 @@ function expectPlainData(value) {
 }
 
 describe('defaultSimulationState', () => {
+  const expectedZeroOutcomeLedger = {
+    allowed: { count: 0, weighted: 0 },
+    blocked: { count: 0, weighted: 0 },
+    dropped: { count: 0, weighted: 0 },
+    missed: { count: 0, weighted: 0 }
+  };
+
   it('creates the authoritative section 1 state shape with current defaults', () => {
     expect(defaultSimulationState()).toEqual({
       config: {
@@ -83,23 +90,98 @@ describe('defaultSimulationState', () => {
           happinessScore: 100
         },
         metrics: {
-          totals: {
-            allowed: 0,
-            blocked: 0,
-            dropped: 0
-          },
+          totals: expectedZeroOutcomeLedger,
           rollingWindow: {
-            allowed: 0,
-            blocked: 0,
-            dropped: 0
+            windowMs: 10000,
+            totals: expectedZeroOutcomeLedger,
+            buckets: []
           },
           analyzerSample: {
-            logs: []
+            logs: [],
+            visibleCount: 0,
+            droppedByBudgetCount: 0
           },
           analyzerDroppedCount: 0
         }
       }
     });
+  });
+
+  it('defines section 4 phase 2 ledger snapshot shape as plain serializable data', () => {
+    const metrics = defaultSimulationState().runtime.metrics;
+
+    expect(metrics).toEqual({
+      totals: expectedZeroOutcomeLedger,
+      rollingWindow: {
+        windowMs: 10000,
+        totals: expectedZeroOutcomeLedger,
+        buckets: []
+      },
+      analyzerSample: {
+        logs: [],
+        visibleCount: 0,
+        droppedByBudgetCount: 0
+      },
+      analyzerDroppedCount: 0
+    });
+
+    const expectedSnapshot = {
+      totals: {
+        allowed: { count: 12, weighted: 1200 },
+        blocked: { count: 8, weighted: 800 },
+        dropped: { count: 5, weighted: 500 },
+        missed: { count: 2, weighted: 200 }
+      },
+      rollingWindow: {
+        windowMs: 10000,
+        totals: {
+          allowed: { count: 3, weighted: 300 },
+          blocked: { count: 1, weighted: 100 },
+          dropped: { count: 1, weighted: 100 },
+          missed: { count: 0, weighted: 0 }
+        },
+        buckets: [
+          {
+            startMs: 1710000000000,
+            endMs: 1710000001000,
+            outcomes: {
+              allowed: { count: 2, weighted: 200 },
+              blocked: { count: 1, weighted: 100 },
+              dropped: { count: 0, weighted: 0 },
+              missed: { count: 0, weighted: 0 }
+            }
+          },
+          {
+            startMs: 1710000001000,
+            endMs: 1710000002000,
+            outcomes: {
+              allowed: { count: 1, weighted: 100 },
+              blocked: { count: 0, weighted: 0 },
+              dropped: { count: 1, weighted: 100 },
+              missed: { count: 0, weighted: 0 }
+            }
+          }
+        ]
+      },
+      analyzerSample: {
+        logs: [
+          {
+            ip: '198.51.100.1',
+            type: 'UDP',
+            action: 'ALLOWED',
+            reason: 'PASS',
+            weight: 100,
+            timestamp: 1710000001500
+          }
+        ],
+        visibleCount: 1,
+        droppedByBudgetCount: 2
+      },
+      analyzerDroppedCount: 2
+    };
+
+    expectPlainData(expectedSnapshot);
+    expect(JSON.parse(JSON.stringify(expectedSnapshot))).toEqual(expectedSnapshot);
   });
 
   it('returns a fresh plain-data tree on every call', () => {

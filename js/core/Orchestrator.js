@@ -8,6 +8,7 @@ import { decideTopologyRoute, projectTopologyAddressing } from '../models/topolo
 import defaultSimulationState from '../state/defaultSimulationState.js';
 import SimulationStore from '../state/SimulationStore.js';
 import { abbreviateNumber } from '../utils.js';
+import MetricsCollector from './MetricsCollector.js';
 
 class StoreBackedSetView {
   constructor(getValues) {
@@ -570,6 +571,7 @@ export default class Orchestrator {
     if (shouldDropLegit) {
       particle.droppedByCollision = true;
       this.server.recordDroppedPacket(particle.trafficWeight || 1);
+      this.recordOutcome('dropped', particle);
       this.logAnalyzerEvent({
         ip: particle.sourceIP,
         type: particle.type,
@@ -616,6 +618,7 @@ export default class Orchestrator {
 
     if (particle.destinationIP !== route.initialDestinationIP) {
       particle.missedTarget = true;
+      this.recordOutcome('missed', particle);
       this.logAnalyzerEvent({
         ip: particle.sourceIP,
         type: particle.type,
@@ -644,6 +647,7 @@ export default class Orchestrator {
     if (!firewallResult.allowed) {
       // Firewall blocked packet
       particle.blockedByFirewall = true;
+      this.recordOutcome('blocked', particle);
       this.logAnalyzerEvent({
         ip: particle.clientIP || particle.sourceIP,
         type: particle.type,
@@ -668,6 +672,7 @@ export default class Orchestrator {
       if (!particle.isMalicious) {
         this.server.recordDroppedPacket(particle.trafficWeight || 1);
       }
+      this.recordOutcome('dropped', particle);
       this.logAnalyzerEvent({
         ip: particle.clientIP || particle.sourceIP,
         type: particle.type,
@@ -678,6 +683,7 @@ export default class Orchestrator {
     } else {
       const serverResult = this.server.receive(particle, { capacity: frameConfig.capacity });
       const action = serverResult.allowed ? 'ALLOWED' : 'DROPPED';
+      this.recordOutcome(serverResult.allowed ? 'allowed' : 'dropped', particle);
 
       this.logAnalyzerEvent({
         ip: particle.clientIP || particle.sourceIP,
@@ -800,12 +806,48 @@ export default class Orchestrator {
     this.attacker = new Attacker();
     this.server = new Server();
     this.firewall = new Firewall();
+    this.metricsCollector = new MetricsCollector({
+      windowMs: this.readStatePath(['runtime', 'metrics', 'rollingWindow', 'windowMs'])
+    });
 
     this.bindGenuineTraffic();
     this.bindAttacker();
     this.bindServer();
     this.bindFirewall();
+    this.syncMetricsSnapshot(0);
     this.syncGenuineTrafficUsers();
+  }
+
+  getPacketWeight(particle) {
+    return Number.isFinite(particle?.trafficWeight) ? particle.trafficWeight : 1;
+  }
+
+  recordOutcome(outcome, particle, timestampMs = Date.now()) {
+    this.metricsCollector.recordOutcome(outcome, {
+      weight: this.getPacketWeight(particle),
+      timestampMs
+    });
+    this.syncMetricsSnapshot(timestampMs);
+  }
+
+  syncMetricsSnapshot(timestampMs = Date.now()) {
+    const snapshot = this.metricsCollector.getSnapshot({ timestampMs });
+    const existingMetrics = this.readStatePath(['runtime', 'metrics']);
+    const existingAnalyzerSample = existingMetrics.analyzerSample || {};
+    const existingLogs = Array.isArray(existingAnalyzerSample.logs)
+      ? existingAnalyzerSample.logs.map((entry) => ({ ...entry }))
+      : [];
+
+    this.writeStatePath(['runtime', 'metrics'], {
+      totals: snapshot.totals,
+      rollingWindow: snapshot.rollingWindow,
+      analyzerSample: {
+        logs: existingLogs,
+        visibleCount: existingAnalyzerSample.visibleCount || 0,
+        droppedByBudgetCount: existingAnalyzerSample.droppedByBudgetCount || 0
+      },
+      analyzerDroppedCount: existingMetrics.analyzerDroppedCount || 0
+    });
   }
 
   bindGenuineTraffic() {

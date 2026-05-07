@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import Orchestrator from '../../js/core/Orchestrator.js';
-import { ATTACK_TYPES, CONSTANTS } from '../../js/constants.js';
+import { ATTACK_TYPES, CONSTANTS, PACKET_TYPES } from '../../js/constants.js';
 
 describe('Performance Caps and Stability', () => {
   let orchestrator;
+
+  function getAnalyzerWeightTotal(logs) {
+    return logs.reduce((sum, log) => sum + (log.weight || 0), 0);
+  }
 
   beforeEach(() => {
     orchestrator = new Orchestrator();
@@ -84,6 +88,24 @@ describe('Performance Caps and Stability', () => {
       // because trafficWeight scales the load
       expect(orchestrator.server.bandwidthUsage).toBeGreaterThan(initialBandwidth);
     });
+
+    it('characterizes throughput intent independently from visible particle count', () => {
+      orchestrator.attacker.isAttacking = true;
+      orchestrator.attacker.deviceCount = 1000;
+      orchestrator.attacker.attackType = ATTACK_TYPES.UDP;
+      orchestrator.attacker.bandwidthMultiplier = 2;
+
+      orchestrator.update(1);
+
+      const spawnedParticleCount = orchestrator.particles.length;
+      const representedTrafficWeight = orchestrator.particles.reduce(
+        (sum, packet) => sum + (packet.trafficWeight || 0),
+        0
+      );
+
+      expect(spawnedParticleCount).toBe(CONSTANTS.VISUAL_SPAWN_CAP_PER_SECOND);
+      expect(representedTrafficWeight).toBeGreaterThan(spawnedParticleCount);
+    });
   });
 
   describe('Analyzer Log Budget', () => {
@@ -150,6 +172,32 @@ describe('Performance Caps and Stability', () => {
 
       // Total logs should never exceed max
       expect(orchestrator.analyzerLogs.length).toBeLessThanOrEqual(CONSTANTS.UI_LOG_MAX_ENTRIES);
+    });
+
+    it('characterizes mismatch risk: analyzer logs can underrepresent high-throughput dropped outcomes', () => {
+      const destinationIP = orchestrator.store.getState().config.defense.topology.publicIP;
+      orchestrator.firewall.blockedProtocols.add('TCP');
+      orchestrator.analyzerLogBudget = 1;
+
+      const processedPackets = 25;
+      for (let i = 0; i < processedPackets; i += 1) {
+        orchestrator.processArrival({
+          type: PACKET_TYPES.HTTP_GET,
+          sourceIP: `172.16.0.${(i % 50) + 1}`,
+          destinationIP,
+          trafficWeight: CONSTANTS.PACKET_VISUAL_SCALE,
+          isMalicious: false
+        });
+      }
+
+      const blockedLogs = orchestrator.analyzerLogs.filter((log) => log.action === 'BLOCKED');
+      const droppedWeight = orchestrator.server.droppedPackets;
+      const loggedBlockedWeight = getAnalyzerWeightTotal(blockedLogs);
+
+      expect(droppedWeight).toBeGreaterThan(0);
+      expect(blockedLogs.length).toBeGreaterThan(0);
+      expect(blockedLogs.length).toBeLessThan(processedPackets);
+      expect(loggedBlockedWeight).toBeLessThan(droppedWeight);
     });
   });
 
