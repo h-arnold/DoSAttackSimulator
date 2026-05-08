@@ -1,10 +1,10 @@
 # **Functional Specification: Interactive DoS/DDoS Attack Simulator**
 
 ---
-Spec-Version: 1.6.0
-Last-Updated: 2026-05-07
+Spec-Version: 1.6.1
+Last-Updated: 2026-05-08
 Changelog: CHANGELOG.md
-Summary: Introduces ViewModelProjector-backed UI snapshots and codifies deterministic reset rehydration guarantees
+Summary: Fixes reverse-proxy toggle restoration semantics and preserves zero-valued active metric projection in UI rendering
 ---
 
 ## **1\. Pedagogical Overview & Curriculum Links**
@@ -181,6 +181,7 @@ The simulator operates as a fully open sandbox. Students are not guided through 
 * Route and addressing decisions are derived from explicit topology configuration (`reverseProxyEnabled`, `publicIP`, `originIP`, `proxyPublicIP`, `proxyEgressPrefix`) using topology helpers.
 * Reverse-proxy forwarding behavior remains the same pedagogically (Public IP check, client IP preservation, proxy egress rewrite), but routing decisions are no longer split across server/firewall/UI ownership.
 * **Separation Cleanup (v1.5.3):** The server model no longer owns reverse-proxy addressing fields or mutators; topology remains authoritative in the defense topology branch and in topology helpers.
+* **Toggle restoration fix (v1.6.1):** Disabling reverse proxy restores the public entry IP to the victim/origin public address so destination validation and routing semantics return to direct mode deterministically.
 
 ### **Genuine User Traffic**
 

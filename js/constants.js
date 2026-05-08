@@ -23,6 +23,11 @@ export const PROTOCOLS = {
   ICMP: 'ICMP'
 };
 
+export const PROXY_BADGE_MODES = {
+  IP: 'ip',
+  COUNT: 'count'
+};
+
 export const CONSTANTS = {
   // Victim / Addressing (v1.2)
   VICTIM_ORIGIN_IP: '203.0.113.10', // fixed origin server IP
@@ -66,6 +71,14 @@ export const CONSTANTS = {
   RATE_LIMIT_DEFAULT: 20,
   RATE_LIMIT_MIN: 5,
   RATE_LIMIT_MAX: 50,
+
+  // Server Capacity
+  SERVER_CAPACITY_MULTIPLIER_MIN: 0.5,
+  SERVER_CAPACITY_MULTIPLIER_MAX: 5,
+
+  // Load Balancing
+  LOAD_BALANCING_MULTIPLIER_DEFAULT: 1,
+  LOAD_BALANCING_MULTIPLIER_ENABLED: 2,
 
   // Happiness Calculation
   HAPPINESS_PENALTY_PER_DROP: 2,

@@ -1,4 +1,9 @@
-import { ATTACK_TYPES, CONSTANTS, SERVER_STATUS } from '../constants.js';
+import {
+  ATTACK_TYPES,
+  CONSTANTS,
+  PROXY_BADGE_MODES,
+  SERVER_STATUS
+} from '../constants.js';
 
 function createZeroOutcomeLedger() {
   return {
@@ -40,11 +45,11 @@ export default function defaultSimulationState() {
         capacity: {
           serverCapacityMultiplier: 1,
           loadBalancingEnabled: false,
-          loadBalancingMultiplier: 1
+          loadBalancingMultiplier: CONSTANTS.LOAD_BALANCING_MULTIPLIER_DEFAULT
         }
       },
       display: {
-        proxyBadgeMode: 'ip'
+        proxyBadgeMode: PROXY_BADGE_MODES.IP
       }
     },
     runtime: {

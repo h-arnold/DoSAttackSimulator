@@ -318,6 +318,18 @@ describe('Orchestrator dispatch contract (Phase 2)', () => {
         loadBalancingMultiplier: 2
       }
     }));
+
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: false }
+    });
+    expect(orchestrator.store.getState().config.defense.topology).toEqual(
+      expect.objectContaining({
+        reverseProxyEnabled: false,
+        publicIP: baseline.topology.originIP,
+        originIP: baseline.topology.originIP
+      })
+    );
   });
 
   it('rejects invalid topology/capacity/display payloads atomically', () => {

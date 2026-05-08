@@ -2,6 +2,9 @@
 
 All notable changes to the specification are documented in this file.
 
+## [1.6.1] - 2026-05-08
+- Fix reverse-proxy toggle rehydration so disabling the proxy restores the victim public entry IP (instead of retaining proxy IP state), preserve zero-valued active packet metrics in `UIManager.render(...)`, and align Playwright config docs with the current `PLAYWRIGHT_BASE_URL` behavior.
+
 ## [1.6.0] - 2026-05-07
 - Implement section-6/7 completion: add pure `ViewModelProjector`-backed `Orchestrator.getState()` snapshots, make `UIManager.render(viewModel)` the primary projection render contract (with compatibility alias), and harden deterministic reset rehydration guarantees with dedicated Section 6/7 Vitest coverage (`viewmodelprojector`, `uimanager.render`, `ui.projection`, `orchestrator.reset`, `reset.comprehensive`).
 

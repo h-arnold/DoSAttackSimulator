@@ -340,9 +340,9 @@ export default class UIManager {
     this.updateHappiness(viewModel.server.happinessScore);
     this.updateAnalyzerLogs(viewModel.analyzerLogs);
     this.updateNetworkStats(
-      viewModel.aggregates?.activeWeighted || viewModel.particles.length,
+      viewModel.aggregates?.activeWeighted ?? viewModel.particles.length,
       viewModel.server.bandwidthUsage,
-      viewModel.server.activeConnectionWeight || 0
+      viewModel.server.activeConnectionWeight ?? 0
     );
   }
 

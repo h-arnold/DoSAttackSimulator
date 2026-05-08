@@ -1,11 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Playwright config for visual regression testing
+ * Playwright config for browser smoke testing.
  * 
  * Environment variables:
- * - TEST_TARGET_URL: URL to test against (defaults to http://localhost:8080)
- * - MCP_SERVER_URL: MCP server URL for visual diff uploads (optional)
+ * - PLAYWRIGHT_BASE_URL: URL to test against (defaults to http://127.0.0.1:8080)
+ *   If set, the local webServer is not started by this config.
  */
 export default defineConfig({
   testDir: './tests/visual',

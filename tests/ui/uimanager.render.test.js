@@ -61,4 +61,23 @@ describe('UIManager.render', () => {
     expect(dom.window.document.getElementById('bandwidth-value').textContent).toBe('66%');
     expect(dom.window.document.getElementById('stat-active-halfopen').textContent).toBe('2');
   });
+
+  it('preserves zero active-weighted values instead of falling back to particle length', () => {
+    const state = defaultSimulationState();
+    state.runtime.traffic.particles = [{ id: 'p1' }, { id: 'p2' }];
+
+    const viewModel = projector.project(state, {
+      aggregates: {
+        activeWeighted: 0,
+        activeLegitWeighted: 0,
+        activeMaliciousWeighted: 0,
+        activeByType: {},
+        halfOpenWeighted: 0
+      }
+    });
+
+    uiManager.render(viewModel);
+
+    expect(dom.window.document.getElementById('stat-active-packets').textContent).toBe('0');
+  });
 });

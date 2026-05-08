@@ -1,4 +1,9 @@
-import { ATTACK_TYPES, CONSTANTS, PROTOCOLS } from '../constants.js';
+import {
+  ATTACK_TYPES,
+  CONSTANTS,
+  PROTOCOLS,
+  PROXY_BADGE_MODES
+} from '../constants.js';
 import GenuineTraffic from '../models/GenuineTraffic.js';
 import Attacker from '../models/Attacker.js';
 import Server from '../models/Server.js';
@@ -89,6 +94,8 @@ export default class Orchestrator {
     this.store = new SimulationStore();
     this.viewModelProjector = new ViewModelProjector();
     this.analyzerLogBudget = 0;
+    this.metricsSnapshotDirty = false;
+    this.metricsSnapshotTimestampMs = 0;
     this.bindCompatibilityAccessors();
     this.initializeModels();
   }
@@ -96,6 +103,8 @@ export default class Orchestrator {
   reset() {
     this.store.replaceState(defaultSimulationState());
     this.analyzerLogBudget = 0;
+    this.metricsSnapshotDirty = false;
+    this.metricsSnapshotTimestampMs = 0;
     this.initializeModels();
   }
 
@@ -326,7 +335,10 @@ export default class Orchestrator {
     const projection = projectTopologyAddressing({ ...topology, reverseProxyEnabled: enabled });
 
     this.writeStatePath(['config', 'defense', 'topology', 'reverseProxyEnabled'], enabled);
-    this.writeStatePath(['config', 'defense', 'topology', 'publicIP'], projection.publicEntryIP);
+    this.writeStatePath(
+      ['config', 'defense', 'topology', 'publicIP'],
+      enabled ? projection.publicEntryIP : (topology.originIP || CONSTANTS.VICTIM_PUBLIC_IP)
+    );
   }
 
   applySetLoadBalancingEnabled(command) {
@@ -338,7 +350,10 @@ export default class Orchestrator {
     }
 
     this.writeStatePath(['config', 'defense', 'capacity', 'loadBalancingEnabled'], enabled);
-    this.writeStatePath(['config', 'defense', 'capacity', 'loadBalancingMultiplier'], enabled ? 2 : 1);
+    this.writeStatePath(
+      ['config', 'defense', 'capacity', 'loadBalancingMultiplier'],
+      enabled ? CONSTANTS.LOAD_BALANCING_MULTIPLIER_ENABLED : CONSTANTS.LOAD_BALANCING_MULTIPLIER_DEFAULT
+    );
   }
 
   applySetServerCapacityMultiplier(command) {
@@ -347,8 +362,8 @@ export default class Orchestrator {
 
     if (typeof multiplier !== 'number'
       || Number.isNaN(multiplier)
-      || multiplier < 0.5
-      || multiplier > 5) {
+      || multiplier < CONSTANTS.SERVER_CAPACITY_MULTIPLIER_MIN
+      || multiplier > CONSTANTS.SERVER_CAPACITY_MULTIPLIER_MAX) {
       throw new Error('SET_SERVER_CAPACITY_MULTIPLIER requires a numeric multiplier within allowed range.');
     }
 
@@ -359,7 +374,7 @@ export default class Orchestrator {
     const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE);
     const { mode } = payload;
 
-    if (mode !== 'ip' && mode !== 'count') {
+    if (mode !== PROXY_BADGE_MODES.IP && mode !== PROXY_BADGE_MODES.COUNT) {
       throw new Error('SET_PROXY_BADGE_MODE requires mode to be "ip" or "count".');
     }
 
@@ -405,6 +420,7 @@ export default class Orchestrator {
 
     // Update particle positions and process arrivals
     this.updateParticles(dt, frameConfig);
+    this.flushMetricsSnapshot();
   }
 
   addParticles(newPackets, topology = this.getTopologyConfig()) {
@@ -604,6 +620,8 @@ export default class Orchestrator {
     if (!particle.blockedByFirewall && !particle.missedTarget && !particle.droppedByCollision) {
       this.processServerArrival(particle, frameConfig);
     }
+
+    this.flushMetricsSnapshot();
   }
 
   runInspection(particle, frameConfig = {
@@ -743,13 +761,18 @@ export default class Orchestrator {
   setProxyBadgeMode(mode) {
     this.dispatch({
       type: ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE,
-      payload: { mode: mode === 'count' ? 'count' : 'ip' }
+      payload: { mode: mode === PROXY_BADGE_MODES.COUNT ? PROXY_BADGE_MODES.COUNT : PROXY_BADGE_MODES.IP }
     });
   }
 
   bindCompatibilityAccessors() {
     this.bindStoreBackedProperty(this, 'isSimulationRunning', ['runtime', 'control', 'simulationRunning'], Boolean);
-    this.bindStoreBackedProperty(this, 'proxyBadgeMode', ['config', 'display', 'proxyBadgeMode'], (value) => value === 'count' ? 'count' : 'ip');
+    this.bindStoreBackedProperty(
+      this,
+      'proxyBadgeMode',
+      ['config', 'display', 'proxyBadgeMode'],
+      (value) => value === PROXY_BADGE_MODES.COUNT ? PROXY_BADGE_MODES.COUNT : PROXY_BADGE_MODES.IP
+    );
     this.bindStoreBackedProperty(this, 'particles', ['runtime', 'traffic', 'particles'], (value) => Array.isArray(value) ? value : []);
     this.bindStoreBackedProperty(this, 'analyzerLogs', ['runtime', 'metrics', 'analyzerSample', 'logs'], (value) => Array.isArray(value) ? value : []);
   }
@@ -768,6 +791,8 @@ export default class Orchestrator {
     this.bindServer();
     this.bindFirewall();
     this.syncMetricsSnapshot(0);
+    this.metricsSnapshotDirty = false;
+    this.metricsSnapshotTimestampMs = 0;
     this.syncGenuineTrafficUsers();
   }
 
@@ -780,7 +805,17 @@ export default class Orchestrator {
       weight: this.getPacketWeight(particle),
       timestampMs
     });
-    this.syncMetricsSnapshot(timestampMs);
+    this.metricsSnapshotDirty = true;
+    this.metricsSnapshotTimestampMs = timestampMs;
+  }
+
+  flushMetricsSnapshot() {
+    if (!this.metricsSnapshotDirty) {
+      return;
+    }
+
+    this.syncMetricsSnapshot(this.metricsSnapshotTimestampMs);
+    this.metricsSnapshotDirty = false;
   }
 
   syncMetricsSnapshot(timestampMs = Date.now()) {
