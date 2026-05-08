@@ -428,9 +428,10 @@ export default class Orchestrator {
       if (this.particles.length >= CONSTANTS.MAX_ACTIVE_PARTICLES) {
         break;
       }
+      const plainPacket = { ...packet };
       // Initialize particle position based on cluster
-      this.initializeParticlePosition(packet, topology);
-      this.particles.push(packet);
+      this.initializeParticlePosition(plainPacket, topology);
+      this.particles.push(plainPacket);
     }
   }
 
