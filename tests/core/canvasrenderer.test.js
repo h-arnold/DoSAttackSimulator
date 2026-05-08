@@ -5,7 +5,7 @@ import { PACKET_TYPES, CONSTANTS } from '../../js/constants.js';
 function OrchestratorStateStub(overrides = {}) {
   const base = {
     server: { bandwidthUsage: 0, cpuLoad: 0, activeConnections: 0 },
-    firewall: { loadBalancingEnabled: false },
+    capacity: { loadBalancingEnabled: false },
     particles: [],
     networkNodes: {
       attacker: { label: 'ATT', badge: 'UDP' },
@@ -230,7 +230,7 @@ describe('CanvasRenderer', () => {
         cpuLoad: 30,
         activeConnections: 5
       },
-      firewall: {
+      capacity: {
         loadBalancingEnabled: false
       },
       particles: [

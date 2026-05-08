@@ -334,15 +334,19 @@ export default class UIManager {
     }
   }
 
-  update(state) {
-    this.updateServerStatus(state.server.status);
-    this.updateResourceBars(state.server.bandwidthUsage, state.server.cpuLoad);
-    this.updateHappiness(state.server.happinessScore);
-    this.updateAnalyzerLogs(state.analyzerLogs);
+  render(viewModel) {
+    this.updateServerStatus(viewModel.server.status);
+    this.updateResourceBars(viewModel.server.bandwidthUsage, viewModel.server.cpuLoad);
+    this.updateHappiness(viewModel.server.happinessScore);
+    this.updateAnalyzerLogs(viewModel.analyzerLogs);
     this.updateNetworkStats(
-      state.aggregates?.activeWeighted || state.particles.length,
-      state.server.bandwidthUsage,
-      state.server.activeConnectionWeight || 0
+      viewModel.aggregates?.activeWeighted ?? viewModel.particles.length,
+      viewModel.server.bandwidthUsage,
+      viewModel.server.activeConnectionWeight ?? 0
     );
+  }
+
+  update(state) {
+    this.render(state);
   }
 }

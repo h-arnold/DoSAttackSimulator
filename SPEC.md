@@ -1,10 +1,10 @@
 # **Functional Specification: Interactive DoS/DDoS Attack Simulator**
 
 ---
-Spec-Version: 1.5.0
-Last-Updated: 2026-01-08
+Spec-Version: 1.6.1
+Last-Updated: 2026-05-08
 Changelog: CHANGELOG.md
-Summary: Improves network visualization with trajectory-based particle spawning, cluster rendering for multi-device nodes, and adds Playwright visual regression tests with MCP integration
+Summary: Fixes reverse-proxy toggle restoration semantics and preserves zero-valued active metric projection in UI rendering
 ---
 
 ## **1\. Pedagogical Overview & Curriculum Links**
@@ -173,6 +173,15 @@ The simulator operates as a fully open sandbox. Students are not guided through 
 
 * **Server Bandwidth Capacity:** Slider allows upgrading the server connection (e.g., increasing the size of the "pipe" from 100Mbps to 10Gbps).  
   * *Pedagogical Value:* Demonstrates that buying more bandwidth ("Scaling Up") is a valid mitigation for Volume attacks, though often expensive.
+* **Capacity Ownership (v1.5.2):** Effective capacity is computed from explicit capacity configuration (`serverCapacityMultiplier`, `loadBalancingEnabled`, `loadBalancingMultiplier`) and passed into server load handling, rather than inferred from hidden mutable server ownership.
+* **Separation Cleanup (v1.5.3):** Capacity flags are not mirrored under firewall state. Rendering and integration read load-balancing from the explicit capacity branch.
+
+### **Topology Ownership (v1.5.2)**
+
+* Route and addressing decisions are derived from explicit topology configuration (`reverseProxyEnabled`, `publicIP`, `originIP`, `proxyPublicIP`, `proxyEgressPrefix`) using topology helpers.
+* Reverse-proxy forwarding behavior remains the same pedagogically (Public IP check, client IP preservation, proxy egress rewrite), but routing decisions are no longer split across server/firewall/UI ownership.
+* **Separation Cleanup (v1.5.3):** The server model no longer owns reverse-proxy addressing fields or mutators; topology remains authoritative in the defense topology branch and in topology helpers.
+* **Toggle restoration fix (v1.6.1):** Disabling reverse proxy restores the public entry IP to the victim/origin public address so destination validation and routing semantics return to direct mode deterministically.
 
 ### **Genuine User Traffic**
 
@@ -192,6 +201,71 @@ The Happiness Score represents how well legitimate users are being served:
 * **Recovery:** Happiness recalculates in real-time using the formula above. As the number of dropped legitimate packets decreases (for example after the attack is mitigated and genuine traffic is being successfully served), Happiness will gradually recover toward 100%, clamped to 0-100. Recovery will not occur while genuine users are still being blocked by firewall rules. The `Reset Simulation` button still immediately restores Happiness to 100%.  
 * **Aggregate drop counting (v1.3):** `droppedPackets` is incremented by the packet’s `trafficWeight` (which already includes `PACKET_VISUAL_SCALE`), so happiness aligns with the aggregate badge counts and not just the number of rendered particles.
 * **False Positive Penalty:** If the firewall blocks a genuine user (172.16.0.x range), it counts as a dropped packet.  
+
+### **Authoritative Metrics Ledger Contract (v1.5.4)**
+
+`runtime.metrics` is an authoritative plain-data ledger placeholder that is safe for store cloning and reset.
+
+* **Totals:** `runtime.metrics.totals` tracks four outcome classes with count + weighted values:
+  * `allowed: { count, weighted }`
+  * `blocked: { count, weighted }`
+  * `dropped: { count, weighted }`
+  * `missed: { count, weighted }`
+* **Rolling window:** `runtime.metrics.rollingWindow` contains:
+  * `windowMs` (default `10000`)
+  * `totals` (same four-outcome `{ count, weighted }` structure as lifetime totals)
+  * `buckets` (array of plain-data bucket objects, initially empty)
+* **Analyzer sample counters:** `runtime.metrics.analyzerSample` contains:
+  * `logs` (visible analyzer entries)
+  * `visibleCount` (number of visible entries admitted by budget)
+  * `droppedByBudgetCount` (entries omitted due to sample budget)
+* **Compatibility field:** `runtime.metrics.analyzerDroppedCount` remains as a numeric compatibility counter during migration.
+
+This shape remains the runtime target for authoritative metrics state.
+
+### **MetricsCollector Utility (v1.5.5)**
+
+Section 4 phase 3 introduces a standalone `MetricsCollector` utility in `js/core/MetricsCollector.js` for authoritative outcome accounting.
+
+* **Supported outcomes:** `allowed`, `blocked`, `dropped`, `missed`.
+* **Record API:** deterministic recording via explicit `recordOutcome(outcome, { weight, timestampMs })` inputs (timestamp defaults are available but tests use explicit time values).
+* **Lifetime totals:** collector maintains cumulative `{ count, weighted }` totals per outcome.
+* **Rolling window:** collector keeps time buckets and returns a rolling-window snapshot (`windowMs`, per-outcome totals, bucket entries) bounded to the configured time range.
+* **Snapshot safety:** `getSnapshot(...)` returns plain-data clones so callers cannot mutate collector internals through returned objects.
+* **Reset:** `reset()` clears lifetime and rolling-window state while preserving collector configuration (`windowMs`, `bucketMs`).
+
+### **Orchestrator Metrics Integration (v1.5.6)**
+
+Section 4 phase 4 wires `MetricsCollector` into the authoritative frame pipeline where outcomes are actually decided.
+
+* **Decision-point recording:**
+  * `missed` recorded when destination IP validation fails during topology routing.
+  * `blocked` recorded when firewall policy denies a packet.
+  * `dropped` recorded for legitimate collision drops and server-side dropped arrivals (including crashed/overload rejections).
+  * `allowed` recorded when the server accepts arrival processing.
+* **Authoritative state projection:** After each recorded outcome, orchestrator writes a fresh plain-data snapshot into `runtime.metrics.totals` and `runtime.metrics.rollingWindow`.
+* **Plain-data safety:** Runtime metrics updates preserve analyzer sample counters/logs as plain data and do not expose mutable collector internals.
+* **Reset semantics:** `RESET_SIMULATION` and `orchestrator.reset()` rebuild defaults and reinitialize the collector so metrics are deterministically zeroed through the authoritative reset flow.
+
+### **View Model Projection Contract (v1.6.0)**
+
+Section 6 introduces a pure projector boundary so UI-facing state is emitted from one deterministic snapshot.
+
+* **Pure projection module:** `js/core/ViewModelProjector.js` projects authoritative store state into the UI-facing `getState()` view model.
+* **Schema groups:** projected output includes server, attacker, firewall, capacity, particles, analyzer logs, control flags, aggregates, and network node labels.
+* **Synchronized addressing labels:** duplicated public/origin IP labels are projected from a single topology source, preventing drift between server and node displays.
+* **Render contract:** `UIManager.render(viewModel)` is the primary UI update entry point; `update(...)` remains as compatibility alias while consuming the same projected payload.
+* **Command integration:** command-driven state changes and frame updates both render from projected snapshots, not from direct UI-to-model mutation.
+
+### **Reset Rehydration Guarantees (v1.6.0)**
+
+Section 7 formalizes reset as authoritative default-state replacement and projection refresh.
+
+* **Single replacement path:** `RESET_SIMULATION` rehydrates from `defaultSimulationState()` instead of piecemeal field clearing.
+* **Runtime clearing:** reset clears traffic particles, analyzer rows, metrics totals/windows, server runtime counters, and control flags through authoritative replacement.
+* **Config restoration:** reset restores attack, firewall, topology, capacity, and display configuration branches to defaults.
+* **Reference isolation:** nested runtime/config objects are rebuilt so stale pre-reset references are not retained.
+* **Determinism:** repeated reset operations are idempotent and produce stable state snapshots.
 
 ### **Packet Generation Rates**
 
@@ -564,14 +638,15 @@ The mitigation engine.
   * blockedProtocols: Set of Enum (TCP, UDP, ICMP).  
   * rateLimitEnabled: Boolean.  
   * rateLimitThreshold: Integer (requests/sec, default 20).  
-  * rateLimitProtocols: Set of Enum (TCP, UDP, ICMP) OR the special value "ALL" (default: ALL).  
-  * rateLimitCounters: Map of IP → {count, lastReset}.  
-  * loadBalancingEnabled: Boolean.  
-* **Method inspect(packet):**  
+  * rateLimitScope: Enum (TCP, UDP, ICMP) OR the special value "ALL" (default: ALL).  
+  * rateLimitWindowSeconds: Number (default: 1 second).  
+  * rateLimitCounters: Map of key → {count, windowStart}, where key is `IP|ALL` or `IP|<protocol>` depending on scope.  
+* **Method inspect(packet, nowSeconds, policyConfig):**  
   * Checks protocol against blockedProtocols.  
   * Checks IP subnet against blockedIPs (extracts first 3 octets).
   * **Clarification (v1.2):** When Reverse Proxy is enabled and `clientIP` is present, IP-based blocking/rate limiting should use the **client IP** (end-user/bot) rather than the proxy egress IP. If `clientIP` is not present, IP-based controls act on the observed `sourceIP` (proxy), illustrating the loss of per-client visibility.
-  * If rateLimitEnabled, checks if IP exceeds threshold (resets counter each second). Rate limiting is applied only if the packet protocol is within `rateLimitProtocols` (or `ALL`).  
+  * Firewall decisions are evaluated from explicit policy config (`blockedProtocols`, `blockedSubnets`, `rateLimit`) plus explicit clock input (`nowSeconds`).
+  * If `rateLimit.enabled`, checks if IP exceeds threshold in the configured window. Rate limiting is applied only if the packet protocol matches `rateLimit.scope` (or `ALL`).  
   * Returns Object: `{allowed: Boolean, reason: String}`.  
   * Logs decisions to the Traffic Analyzer (see logging clarification below).  
 * **Method getDetectedSubnets():** Returns list of all unique /24 subnets seen in traffic (for UI display).
@@ -579,7 +654,7 @@ The mitigation engine.
 **Clarifications (v1):**
 
 * **Protocol mapping:** Blocking **TCP** blocks both **HTTP_GET** (legitimate web traffic) and **TCP SYN** (attack traffic).
-* **Rate limit scope:** Rate limiting is only active when the Firewall dashboard is enabled/open in the UI, and can be configured to apply to **ALL** protocols or a selected subset (TCP/UDP/ICMP).
+* **Rate limit scope:** Rate limiting is active when policy enables it, and can be configured to apply to **ALL** protocols or a selected subset (TCP/UDP/ICMP).
 * **Traffic Analyzer logging:** To avoid UI lockups, the analyzer logs at most `UI_ANALYZER_LOG_MAX_PER_SECOND` entries per second. (Prefer logging BLOCKED/DROPPED events; sample ALLOWED events if there is remaining budget.)
 * **Aggregate badges (v1.3):** Analyzer counters and any per-protocol tallies should use the same aggregate values shown in the attacker/legit badges (e.g., abbreviate 1,000 as 1k) so the numbers stay consistent across UI and metrics. Logs may append the packet visual scale prefix (e.g., “×100”) to reflect weighted entries.
 

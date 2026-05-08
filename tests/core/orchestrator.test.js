@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import Orchestrator from '../../js/core/Orchestrator.js';
+import Orchestrator, { ORCHESTRATOR_COMMAND_TYPES } from '../../js/core/Orchestrator.js';
 import { PACKET_TYPES, ATTACK_TYPES, CONSTANTS } from '../../js/constants.js';
 
 describe('Orchestrator', () => {
@@ -204,7 +204,10 @@ describe('Orchestrator', () => {
   });
 
   it('computes weighted aggregates and network node metadata', () => {
-    orchestrator.server.reverseProxyEnabled = true;
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.particles = [
       { trafficWeight: 50, isMalicious: true, type: PACKET_TYPES.UDP },
       { trafficWeight: 25, isMalicious: false, type: PACKET_TYPES.HTTP_GET }
@@ -230,16 +233,44 @@ describe('Orchestrator', () => {
     expect(orchestrator.analyzerLogs[0].weight).toBe(200);
   });
 
+  it('records processed outcomes into authoritative runtime metrics', () => {
+    const destinationIP = orchestrator.store.getState().config.defense.topology.publicIP;
+
+    orchestrator.analyzerLogBudget = 5;
+    orchestrator.processArrival({
+      type: PACKET_TYPES.UDP,
+      sourceIP: '198.51.100.1',
+      destinationIP,
+      trafficWeight: 250,
+      isMalicious: true
+    });
+
+    const runtimeMetrics = orchestrator.store.getState().runtime.metrics;
+
+    expect(orchestrator.server.bandwidthUsage).toBeGreaterThan(0);
+    expect(orchestrator.analyzerLogs).toEqual([expect.objectContaining({ action: 'ALLOWED' })]);
+    expect(runtimeMetrics.totals).toEqual({
+      allowed: { count: 1, weighted: 250 },
+      blocked: { count: 0, weighted: 0 },
+      dropped: { count: 0, weighted: 0 },
+      missed: { count: 0, weighted: 0 }
+    });
+    expect(runtimeMetrics.rollingWindow.windowMs).toBe(10000);
+    expect(runtimeMetrics.rollingWindow.totals).toEqual(runtimeMetrics.totals);
+    expect(runtimeMetrics.rollingWindow.buckets.length).toBeGreaterThan(0);
+  });
+
   // v1.2 Tests: Destination IP assignment
   it('should assign server public IP to genuine packets', () => {
     orchestrator.isSimulationRunning = true;
     orchestrator.update(0.1); // Spawn some genuine packets
     
     expect(orchestrator.particles.length).toBeGreaterThan(0);
+    const publicIP = orchestrator.getState().server.publicIP;
     
     // All genuine packets should have destinationIP set to server's public IP
     orchestrator.particles.forEach(packet => {
-      expect(packet.destinationIP).toBe(orchestrator.server.publicIP);
+      expect(packet.destinationIP).toBe(publicIP);
     });
   });
 
@@ -271,7 +302,10 @@ describe('Orchestrator', () => {
     orchestrator.particles = [];
     
     // Enable proxy
-    orchestrator.server.setReverseProxyEnabled(true);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     
     // Spawn new packets
     orchestrator.update(0.05);
@@ -285,7 +319,10 @@ describe('Orchestrator', () => {
 
   // v1.2 Tests: Proxy routing logic
   it('should reject packets with wrong destination IP when proxy is enabled', () => {
-    orchestrator.server.setReverseProxyEnabled(true);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.attacker.isAttacking = true;
     orchestrator.attacker.deviceCount = 5;
     orchestrator.attacker.targetIP = '203.0.113.10'; // Wrong IP (origin, not proxy)
@@ -303,7 +340,10 @@ describe('Orchestrator', () => {
   });
 
   it('should forward packets with correct destination IP through proxy', () => {
-    orchestrator.server.setReverseProxyEnabled(true);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.attacker.isAttacking = true;
     orchestrator.attacker.deviceCount = 5;
     orchestrator.attacker.targetIP = CONSTANTS.PROXY_PUBLIC_IP; // Correct proxy IP
@@ -324,7 +364,10 @@ describe('Orchestrator', () => {
   });
 
   it('should preserve client IP and rewrite source IP when forwarding through proxy', () => {
-    orchestrator.server.setReverseProxyEnabled(true);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.isSimulationRunning = true;
     
     orchestrator.update(0.1); // Spawn genuine packets
@@ -348,7 +391,10 @@ describe('Orchestrator', () => {
   });
 
   it('should process packets normally when proxy is disabled', () => {
-    orchestrator.server.setReverseProxyEnabled(false);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: false }
+    });
     orchestrator.isSimulationRunning = true;
     
     orchestrator.update(0.1); // Spawn genuine packets
@@ -371,7 +417,10 @@ describe('Orchestrator', () => {
   });
 
   it('should reject packets targeting origin IP when proxy is enabled', () => {
-    orchestrator.server.setReverseProxyEnabled(true);
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
     orchestrator.isSimulationRunning = true;
     
     // Manually create a packet targeting the origin IP instead of proxy
@@ -385,5 +434,49 @@ describe('Orchestrator', () => {
     
     // All packets should be rejected with MISSED/WRONG_IP
     expect(orchestrator.analyzerLogs.every(log => log.action === 'MISSED' && log.reason === 'WRONG_IP')).toBe(true);
+  });
+
+  it('routes inspection from explicit topology config when reverse proxy is enabled', () => {
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: true }
+    });
+
+    const particle = {
+      type: PACKET_TYPES.HTTP_GET,
+      sourceIP: '45.33.12.7',
+      destinationIP: CONSTANTS.PROXY_PUBLIC_IP,
+      isMalicious: false,
+      trafficWeight: 1,
+      clientIP: null
+    };
+
+    orchestrator.processArrival(particle);
+
+    expect(particle.clientIP).toBe('45.33.12.7');
+    expect(particle.sourceIP).toBe('198.51.100.7');
+    expect(particle.isForwarded).toBe(true);
+  });
+
+  it('routes inspection from explicit topology config when reverse proxy is disabled', () => {
+    orchestrator.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+      payload: { enabled: false }
+    });
+
+    const particle = {
+      type: PACKET_TYPES.HTTP_GET,
+      sourceIP: '45.33.12.7',
+      destinationIP: CONSTANTS.VICTIM_PUBLIC_IP,
+      isMalicious: false,
+      trafficWeight: 1,
+      clientIP: null
+    };
+
+    orchestrator.processArrival(particle);
+
+    expect(particle.clientIP).toBeNull();
+    expect(particle.sourceIP).toBe('45.33.12.7');
+    expect(particle.isForwarded).toBeUndefined();
   });
 });

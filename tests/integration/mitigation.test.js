@@ -1,6 +1,22 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import Orchestrator from '../../js/core/Orchestrator.js';
-import { ATTACK_TYPES, PROTOCOLS, PACKET_TYPES } from '../../js/constants.js';
+import Orchestrator, { ORCHESTRATOR_COMMAND_TYPES } from '../../js/core/Orchestrator.js';
+import { ATTACK_TYPES, PROTOCOLS, PACKET_TYPES, CONSTANTS } from '../../js/constants.js';
+
+function makeArrivalPacket({
+  type = PACKET_TYPES.UDP,
+  sourceIP = '45.33.12.7',
+  destinationIP = '203.0.113.10',
+  trafficWeight = 20,
+  isMalicious = true
+} = {}) {
+  return {
+    type,
+    sourceIP,
+    destinationIP,
+    trafficWeight,
+    isMalicious
+  };
+}
 
 describe('Mitigation Behaviors Integration', () => {
   let orchestrator;
@@ -9,10 +25,99 @@ describe('Mitigation Behaviors Integration', () => {
     orchestrator = new Orchestrator();
   });
 
+  describe('Phase 5 Domain Wiring', () => {
+    it('uses capacity branch in simulation path: load balancing changes effective server load', () => {
+      const directPacket = makeArrivalPacket({
+        destinationIP: orchestrator.store.getState().config.defense.topology.publicIP,
+        trafficWeight: 40
+      });
+
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
+        payload: { enabled: false }
+      });
+
+      orchestrator.processArrival({ ...directPacket });
+      const baselineLoad = orchestrator.server.bandwidthUsage;
+      expect(baselineLoad).toBeGreaterThan(0);
+
+      orchestrator.server.bandwidthUsage = 0;
+
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
+        payload: { enabled: true }
+      });
+
+      orchestrator.processArrival({ ...directPacket });
+      const balancedLoad = orchestrator.server.bandwidthUsage;
+
+      expect(orchestrator.store.getState().config.defense.capacity.loadBalancingEnabled).toBe(true);
+      expect(balancedLoad).toBeLessThan(baselineLoad);
+    });
+
+    it('uses topology branch in simulation path: reverse proxy changes route behavior', () => {
+      const clientIP = '203.0.113.77';
+
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+        payload: { enabled: true }
+      });
+
+      const proxyPacket = makeArrivalPacket({
+        type: PACKET_TYPES.HTTP_GET,
+        sourceIP: clientIP,
+        destinationIP: orchestrator.store.getState().config.defense.topology.publicIP,
+        isMalicious: false,
+        trafficWeight: 1
+      });
+
+      orchestrator.processArrival(proxyPacket);
+
+      expect(orchestrator.store.getState().config.defense.topology.reverseProxyEnabled).toBe(true);
+      expect(proxyPacket.isForwarded).toBe(true);
+      expect(proxyPacket.clientIP).toBe(clientIP);
+      expect(proxyPacket.sourceIP.startsWith('198.51.100.')).toBe(true);
+    });
+
+    it('uses firewall policy branch in simulation path: rate limiting works regardless of display flags', () => {
+      const sourceIP = '198.18.0.9';
+
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_ENABLED,
+        payload: { enabled: true }
+      });
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_THRESHOLD,
+        payload: { threshold: CONSTANTS.RATE_LIMIT_MIN }
+      });
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE,
+        payload: { mode: 'count' }
+      });
+
+      const packets = [];
+      for (let i = 0; i < CONSTANTS.RATE_LIMIT_MIN + 1; i += 1) {
+        const packet = makeArrivalPacket({
+          sourceIP,
+          destinationIP: orchestrator.store.getState().config.defense.topology.publicIP,
+          type: PACKET_TYPES.UDP
+        });
+        packets.push(packet);
+        orchestrator.processArrival(packet);
+      }
+
+      const finalPacket = packets[packets.length - 1];
+      expect(orchestrator.store.getState().config.defense.firewall.rateLimit.enabled).toBe(true);
+      expect(finalPacket.blockedByFirewall).toBe(true);
+    });
+
+    it('does not expose capacity flags on firewall model', () => {
+      expect(Object.prototype.hasOwnProperty.call(orchestrator.firewall, 'loadBalancingEnabled')).toBe(false);
+    });
+  });
+
   describe('Rate Limiting', () => {
     it('should drop packets exceeding rate limit threshold', () => {
-      // Enable firewall dashboard and rate limiting
-      orchestrator.firewall.dashboardOpen = true;
       orchestrator.firewall.rateLimitEnabled = true;
       orchestrator.firewall.rateLimitThreshold = 3; // Very low threshold
 
@@ -33,10 +138,9 @@ describe('Mitigation Behaviors Integration', () => {
       expect(blockedLogs.length).toBeGreaterThan(0);
     });
 
-    it('should not apply rate limit when dashboard is closed', () => {
-      orchestrator.firewall.dashboardOpen = false;
-      orchestrator.firewall.rateLimitEnabled = true;
-      orchestrator.firewall.rateLimitThreshold = 5;
+    it('should not apply rate limit when policy is disabled', () => {
+      orchestrator.firewall.rateLimitEnabled = false;
+      orchestrator.firewall.rateLimitThreshold = 1;
 
       orchestrator.attacker.isAttacking = true;
       orchestrator.attacker.deviceCount = 10; // Increased to ensure packets are generated
@@ -47,7 +151,7 @@ describe('Mitigation Behaviors Integration', () => {
         orchestrator.update(1);
       }
 
-      // Should not have any rate limit blocks when dashboard closed
+      // Should not have any rate limit blocks when policy is disabled
       const blockedLogs = orchestrator.analyzerLogs.filter(log => log.reason === 'RATE_LIMIT');
       expect(blockedLogs.length).toBe(0);
     });
@@ -55,19 +159,23 @@ describe('Mitigation Behaviors Integration', () => {
 
   describe('Load Balancing', () => {
     it('should render dual pipes when load balancing enabled', () => {
-      // Load balancing enables dual pipe visualization
-      orchestrator.firewall.loadBalancingEnabled = true;
-      
-      const state = orchestrator.getState();
-      expect(state.firewall.loadBalancingEnabled).toBe(true);
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
+        payload: { enabled: true }
+      });
+
+      const state = orchestrator.store.getState();
+      expect(state.config.defense.capacity.loadBalancingEnabled).toBe(true);
     });
 
     it('should toggle load balancing flag correctly', () => {
-      orchestrator.firewall.loadBalancingEnabled = true;
-      const state = orchestrator.getState();
+      orchestrator.dispatch({
+        type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
+        payload: { enabled: true }
+      });
+      const state = orchestrator.store.getState();
       
-      // The renderer uses this flag to draw dual pipes
-      expect(state.firewall.loadBalancingEnabled).toBe(true);
+      expect(state.config.defense.capacity.loadBalancingEnabled).toBe(true);
     });
   });
 

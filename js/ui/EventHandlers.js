@@ -1,4 +1,5 @@
 import { ATTACK_TYPES, PROTOCOLS } from '../constants.js';
+import { ORCHESTRATOR_COMMAND_TYPES } from '../core/Orchestrator.js';
 
 export default class EventHandlers {
   constructor(orchestrator, uiManager, renderer) {
@@ -52,7 +53,7 @@ export default class EventHandlers {
   attachSimulationControls() {
     if (this.elements.btnStartSimulation) {
       this.elements.btnStartSimulation.addEventListener('click', () => {
-        this.orchestrator.isSimulationRunning = true;
+        this.orchestrator.dispatch({ type: ORCHESTRATOR_COMMAND_TYPES.START_SIMULATION });
         this.toggleSimulationButtons(true);
         this.elements.btnStartAttack.disabled = false;
       });
@@ -60,7 +61,7 @@ export default class EventHandlers {
 
     if (this.elements.btnStopSimulation) {
       this.elements.btnStopSimulation.addEventListener('click', () => {
-        this.orchestrator.isSimulationRunning = false;
+        this.orchestrator.dispatch({ type: ORCHESTRATOR_COMMAND_TYPES.STOP_SIMULATION });
         this.toggleSimulationButtons(false);
         this.elements.btnStartAttack.disabled = true;
       });
@@ -68,9 +69,7 @@ export default class EventHandlers {
 
     if (this.elements.btnStartAttack) {
       this.elements.btnStartAttack.addEventListener('click', () => {
-        // Regenerate botnet ranges on attack start
-        this.orchestrator.attacker.generateBotnetRanges();
-        this.orchestrator.attacker.isAttacking = true;
+        this.orchestrator.dispatch({ type: ORCHESTRATOR_COMMAND_TYPES.START_ATTACK });
         this.toggleAttackButtons(true);
         this.uiManager.updateBotnetRanges(this.orchestrator.attacker.botnetRanges);
       });
@@ -78,14 +77,14 @@ export default class EventHandlers {
 
     if (this.elements.btnStopAttack) {
       this.elements.btnStopAttack.addEventListener('click', () => {
-        this.orchestrator.attacker.isAttacking = false;
+        this.orchestrator.dispatch({ type: ORCHESTRATOR_COMMAND_TYPES.STOP_ATTACK });
         this.toggleAttackButtons(false);
       });
     }
 
     if (this.elements.btnReset) {
       this.elements.btnReset.addEventListener('click', () => {
-        this.orchestrator.reset();
+        this.orchestrator.dispatch({ type: ORCHESTRATOR_COMMAND_TYPES.RESET_SIMULATION });
         this.uiManager.clearLogs();
         this.uiManager.updateBotnetRanges([]);
         this.toggleSimulationButtons(false);
@@ -112,7 +111,10 @@ export default class EventHandlers {
     if (this.elements.sliderDeviceCount) {
       this.elements.sliderDeviceCount.addEventListener('input', (e) => {
         const value = Number.parseInt(e.target.value, 10);
-        this.orchestrator.attacker.deviceCount = value;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG,
+          payload: { deviceCount: value }
+        });
         this.uiManager.updateAttackerInfo(value, this.orchestrator.attacker.bandwidthMultiplier);
       });
     }
@@ -125,25 +127,37 @@ export default class EventHandlers {
         if (!selectedAttackType) {
           // Fallback to UDP if invalid value
           console.warn(`Invalid attack type selected: "${selectedKey}". Falling back to UDP.`);
-          this.orchestrator.attacker.attackType = ATTACK_TYPES.UDP;
+          this.orchestrator.dispatch({
+            type: ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG,
+            payload: { attackType: ATTACK_TYPES.UDP }
+          });
           e.target.value = 'UDP';
           return;
         }
         
-        this.orchestrator.attacker.attackType = selectedAttackType;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG,
+          payload: { attackType: selectedAttackType }
+        });
       });
     }
 
     if (this.elements.inputTargetIP) {
       this.elements.inputTargetIP.addEventListener('input', (e) => {
-        this.orchestrator.attacker.targetIP = e.target.value;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG,
+          payload: { targetIP: e.target.value }
+        });
       });
     }
 
     if (this.elements.sliderAttackBandwidth) {
       this.elements.sliderAttackBandwidth.addEventListener('input', (e) => {
         const value = Number.parseFloat(e.target.value);
-        this.orchestrator.attacker.bandwidthMultiplier = value;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG,
+          payload: { bandwidthMultiplier: value }
+        });
         this.uiManager.updateAttackerInfo(this.orchestrator.attacker.deviceCount, value);
       });
     }
@@ -153,7 +167,10 @@ export default class EventHandlers {
     if (this.elements.sliderServerCapacity) {
       this.elements.sliderServerCapacity.addEventListener('input', (e) => {
         const value = Number.parseFloat(e.target.value);
-        this.orchestrator.server.bandwidthCapacityMultiplier = value;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_SERVER_CAPACITY_MULTIPLIER,
+          payload: { multiplier: value }
+        });
         // Update the UI label
         const label = document.getElementById('server-capacity-value');
         if (label) {
@@ -167,38 +184,38 @@ export default class EventHandlers {
     // Protocol blocking
     if (this.elements.checkBlockTcp) {
       this.elements.checkBlockTcp.addEventListener('change', (e) => {
-        if (e.target.checked) {
-          this.orchestrator.firewall.blockedProtocols.add(PROTOCOLS.TCP);
-        } else {
-          this.orchestrator.firewall.blockedProtocols.delete(PROTOCOLS.TCP);
-        }
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_PROTOCOL_BLOCK,
+          payload: { protocol: PROTOCOLS.TCP, blocked: e.target.checked }
+        });
       });
     }
 
     if (this.elements.checkBlockUdp) {
       this.elements.checkBlockUdp.addEventListener('change', (e) => {
-        if (e.target.checked) {
-          this.orchestrator.firewall.blockedProtocols.add(PROTOCOLS.UDP);
-        } else {
-          this.orchestrator.firewall.blockedProtocols.delete(PROTOCOLS.UDP);
-        }
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_PROTOCOL_BLOCK,
+          payload: { protocol: PROTOCOLS.UDP, blocked: e.target.checked }
+        });
       });
     }
 
     if (this.elements.checkBlockIcmp) {
       this.elements.checkBlockIcmp.addEventListener('change', (e) => {
-        if (e.target.checked) {
-          this.orchestrator.firewall.blockedProtocols.add(PROTOCOLS.ICMP);
-        } else {
-          this.orchestrator.firewall.blockedProtocols.delete(PROTOCOLS.ICMP);
-        }
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_PROTOCOL_BLOCK,
+          payload: { protocol: PROTOCOLS.ICMP, blocked: e.target.checked }
+        });
       });
     }
 
     // Rate limiting
     if (this.elements.checkRateLimit) {
       this.elements.checkRateLimit.addEventListener('change', (e) => {
-        this.orchestrator.firewall.rateLimitEnabled = e.target.checked;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_ENABLED,
+          payload: { enabled: e.target.checked }
+        });
         if (this.elements.rateLimitControls) {
           if (e.target.checked) {
             this.elements.rateLimitControls.classList.remove('hidden');
@@ -212,7 +229,10 @@ export default class EventHandlers {
     if (this.elements.sliderRateLimit) {
       this.elements.sliderRateLimit.addEventListener('input', (e) => {
         const value = Number.parseInt(e.target.value, 10);
-        this.orchestrator.firewall.rateLimitThreshold = value;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_THRESHOLD,
+          payload: { threshold: value }
+        });
         if (this.uiManager.elements.rateLimitValue) {
           this.uiManager.elements.rateLimitValue.textContent = value;
         }
@@ -221,14 +241,20 @@ export default class EventHandlers {
 
     if (this.elements.dropdownRateLimitScope) {
       this.elements.dropdownRateLimitScope.addEventListener('change', (e) => {
-        this.orchestrator.firewall.rateLimitScope = e.target.value;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_SCOPE,
+          payload: { scope: e.target.value }
+        });
       });
     }
 
     // Load balancing
     if (this.elements.checkLoadBalancing) {
       this.elements.checkLoadBalancing.addEventListener('change', (e) => {
-        this.orchestrator.firewall.loadBalancingEnabled = e.target.checked;
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED,
+          payload: { enabled: e.target.checked }
+        });
       });
     }
 
@@ -236,12 +262,13 @@ export default class EventHandlers {
     if (this.elements.checkReverseProxy) {
       this.elements.checkReverseProxy.addEventListener('change', (e) => {
         const enabled = e.target.checked;
-        this.orchestrator.server.setReverseProxyEnabled(enabled);
-        if (this.orchestrator.firewall) {
-           this.orchestrator.firewall.reverseProxyEnabled = enabled; 
-        }
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED,
+          payload: { enabled }
+        });
         this.uiManager.updateAddressing(enabled);
-        this.uiManager.updateServerIPs(this.orchestrator.server.publicIP, this.orchestrator.server.originIP);
+        const state = this.orchestrator.getState();
+        this.uiManager.updateServerIPs(state.server.publicIP, state.server.originIP);
       });
     }
   }
@@ -249,7 +276,10 @@ export default class EventHandlers {
   attachDisplayControls() {
     if (this.elements.selectProxyBadge) {
       this.elements.selectProxyBadge.addEventListener('change', (e) => {
-        this.orchestrator.setProxyBadgeMode(e.target.value);
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE,
+          payload: { mode: e.target.value }
+        });
       });
     }
   }
@@ -295,11 +325,10 @@ export default class EventHandlers {
       detectedSubnets,
       this.orchestrator.firewall.blockedIPs,
       (subnet, isBlocked) => {
-        if (isBlocked) {
-          this.orchestrator.firewall.blockedIPs.add(subnet);
-        } else {
-          this.orchestrator.firewall.blockedIPs.delete(subnet);
-        }
+        this.orchestrator.dispatch({
+          type: ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_SUBNET_BLOCK,
+          payload: { subnet, blocked: isBlocked }
+        });
       }
     );
   }

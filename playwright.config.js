@@ -1,65 +1,42 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Playwright config for visual regression testing
+ * Playwright config for browser smoke testing.
  * 
  * Environment variables:
- * - TEST_TARGET_URL: URL to test against (defaults to http://localhost:8080)
- * - MCP_SERVER_URL: MCP server URL for visual diff uploads (optional)
+ * - PLAYWRIGHT_BASE_URL: URL to test against (defaults to http://127.0.0.1:8080)
+ *   If set, the local webServer is not started by this config.
  */
 export default defineConfig({
   testDir: './tests/visual',
-  
-  // Timeout settings
-  timeout: 30000,
-  expect: {
-    timeout: 5000,
-    toMatchSnapshot: {
-      threshold: 0.05, // Allow up to 5% pixel difference for anti-aliasing
-      maxDiffPixels: 20
-    }
-  },
-
-  // Fail fast in CI
+  testMatch: /.*\.spec\.js/,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
-
-  // Reporter config
-  reporter: [
-    ['html', { outputFolder: 'playwright-report' }],
-    ['list']
-  ],
-
-  // Test output
-  outputDir: 'test-results/',
-
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
+  timeout: 30_000,
+  expect: {
+    timeout: 5_000,
+  },
+  outputDir: 'test-results',
   use: {
-    // Base URL for tests
-    baseURL: process.env.TEST_TARGET_URL || 'http://localhost:8080',
-    
-    // Screenshot settings
+    ...devices['Desktop Chrome'],
+    baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://127.0.0.1:8080',
+    trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    trace: 'retain-on-failure',
-    
-    // Viewport
+    video: 'retain-on-failure',
     viewport: { width: 1400, height: 900 },
+    launchOptions: {
+      args: ['--disable-dev-shm-usage'],
+    },
   },
-
-  // Browser projects
-  projects: [
-    {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
-    }
-  ],
-
-  // Web server for local testing
-  webServer: process.env.TEST_TARGET_URL ? undefined : {
-    command: 'npx http-server . -p 8080 -c-1',
-    port: 8080,
-    timeout: 120 * 1000,
-    reuseExistingServer: !process.env.CI,
-  },
+  webServer: process.env.PLAYWRIGHT_BASE_URL
+    ? undefined
+    : {
+        command: 'npm run serve',
+        port: 8080,
+        reuseExistingServer: !process.env.CI,
+        timeout: 120_000,
+      },
 });

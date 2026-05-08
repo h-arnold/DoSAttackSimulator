@@ -2,6 +2,30 @@
 
 All notable changes to the specification are documented in this file.
 
+## [1.6.1] - 2026-05-08
+- Fix reverse-proxy toggle rehydration so disabling the proxy restores the victim public entry IP (instead of retaining proxy IP state), preserve zero-valued active packet metrics in `UIManager.render(...)`, and align Playwright config docs with the current `PLAYWRIGHT_BASE_URL` behavior.
+
+## [1.6.0] - 2026-05-07
+- Implement section-6/7 completion: add pure `ViewModelProjector`-backed `Orchestrator.getState()` snapshots, make `UIManager.render(viewModel)` the primary projection render contract (with compatibility alias), and harden deterministic reset rehydration guarantees with dedicated Section 6/7 Vitest coverage (`viewmodelprojector`, `uimanager.render`, `ui.projection`, `orchestrator.reset`, `reset.comprehensive`).
+
+## [1.5.6] - 2026-05-07
+- Implement section-4 phase-4 integration by wiring `MetricsCollector` into orchestrator outcome decision points (allowed/blocked/dropped/missed), projecting plain-data snapshots into `runtime.metrics`, and enforcing deterministic metric reset through the authoritative `RESET_SIMULATION` flow with integration coverage for each outcome and reset.
+
+## [1.5.5] - 2026-05-07
+- Implement section-4 phase-3 `MetricsCollector` as a deterministic authoritative ledger utility (allowed/blocked/dropped/missed outcome recording, lifetime count+weighted accumulation, rolling-window bucket aging, safe snapshot cloning, and reset behavior) with focused Vitest unit coverage while keeping it decoupled from orchestrator/UI integration.
+
+## [1.5.4] - 2026-05-07
+- Define section-4 phase-2 authoritative metrics ledger placeholder shape in defaults and tests: outcome totals (allowed/blocked/dropped/missed with count+weighted fields), rolling-window scaffold (`windowMs`, `totals`, `buckets`), and analyzer sample counters (`visibleCount`, `droppedByBudgetCount`) while keeping state plain-data serializable for store cloning/reset.
+
+## [1.5.3] - 2026-05-07
+- Complete section-3 phase-6 cleanup: remove stale cross-domain adapters (server-owned reverse-proxy fields/mutators and firewall-mirrored load-balancing flag), and update renderer/orchestrator/tests to assert explicit firewall, topology, and capacity branch ownership without changing simulation behavior.
+
+## [1.5.2] - 2026-05-07
+- Refactor section-3 phase-4 ownership boundaries: server load now consumes explicit capacity input (via effective-capacity helper), and packet routing/addressing consumers now use explicit topology helper inputs for reverse-proxy and direct-path decisions while preserving classroom behavior.
+
+## [1.5.1] - 2026-05-07
+- Refine firewall ownership in `SPEC.md` so rate limiting is enforced from explicit firewall policy inputs (`enabled`, `threshold`, `scope`, `windowSeconds`) and explicit clock input, removing the stale dashboard-open activation dependency while preserving protocol/subnet blocking semantics.
+
 ## [1.5.0] - 2026-01-08
 - **Network Visualization Improvements:**
   - Implement trajectory-based particle spawning: particles now spawn from cluster areas (attacker top, legit bottom) with deterministic positions and velocity vectors

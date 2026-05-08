@@ -31,7 +31,7 @@ describe('Firewall', () => {
   });
 
   it('rate limits per IP per second with protocol scope and resets window', () => {
-    const fw = new Firewall({ rateLimitEnabled: true, dashboardOpen: true, rateLimitThreshold: 2, rateLimitScope: PROTOCOLS.UDP });
+    const fw = new Firewall({ rateLimitEnabled: true, rateLimitThreshold: 2, rateLimitScope: PROTOCOLS.UDP });
     const baseTime = 1000;
     const pkt = makePacket(PACKET_TYPES.UDP, '10.0.0.1');
     expect(fw.inspect(pkt, baseTime).allowed).toBe(true); // 1
@@ -40,11 +40,22 @@ describe('Firewall', () => {
     expect(fw.inspect(pkt, baseTime + 1.2).allowed).toBe(true); // window reset
   });
 
-  it('rate limit inactive when dashboard closed', () => {
-    const fw = new Firewall({ rateLimitEnabled: true, dashboardOpen: false, rateLimitThreshold: 1 });
+  it('rate limiting depends on explicit firewall policy input only', () => {
+    const fw = new Firewall({ rateLimitEnabled: true, rateLimitThreshold: 1 });
     const pkt = makePacket(PACKET_TYPES.ICMP, '10.0.0.2');
-    expect(fw.inspect(pkt, 1).allowed).toBe(true);
-    expect(fw.inspect(pkt, 1.1).allowed).toBe(true); // would have blocked if active
+    const policy = {
+      blockedProtocols: [],
+      blockedSubnets: [],
+      rateLimit: {
+        enabled: true,
+        threshold: 1,
+        scope: 'ALL',
+        windowSeconds: 1
+      }
+    };
+
+    expect(fw.inspect(pkt, 1, policy).allowed).toBe(true);
+    expect(fw.inspect(pkt, 1.1, policy).allowed).toBe(false);
   });
 
   it('tracks detected subnets from traffic', () => {
@@ -57,7 +68,7 @@ describe('Firewall', () => {
 
   // v1.2 Tests: Reverse Proxy
   it('uses clientIP for rate limiting when available (reverse proxy enabled)', () => {
-    const fw = new Firewall({ rateLimitEnabled: true, dashboardOpen: true, rateLimitThreshold: 2, rateLimitScope: 'ALL' });
+    const fw = new Firewall({ rateLimitEnabled: true, rateLimitThreshold: 2, rateLimitScope: 'ALL' });
     const baseTime = 1000;
     // When reverse proxy is enabled, all packets come from proxy egress but have clientIP
     const pkt1 = { type: PACKET_TYPES.HTTP_GET, sourceIP: '198.51.100.5', clientIP: '45.33.12.7' };
@@ -85,7 +96,7 @@ describe('Firewall', () => {
   });
 
   it('falls back to sourceIP when clientIP not present', () => {
-    const fw = new Firewall({ rateLimitEnabled: true, dashboardOpen: true, rateLimitThreshold: 2, rateLimitScope: 'ALL' });
+    const fw = new Firewall({ rateLimitEnabled: true, rateLimitThreshold: 2, rateLimitScope: 'ALL' });
     const baseTime = 1000;
     // Packet without clientIP (reverse proxy not enabled or client IP not preserved)
     const pkt = { type: PACKET_TYPES.UDP, sourceIP: '10.0.0.1' };

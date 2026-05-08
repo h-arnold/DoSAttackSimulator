@@ -3,6 +3,41 @@ import Server from '../../js/models/Server.js';
 import { PACKET_TYPES, SERVER_STATUS, CONSTANTS } from '../../js/constants.js';
 
 describe('Server', () => {
+  it('applies explicit capacity input for volume traffic load', () => {
+    const server = new Server();
+
+    server.receive(
+      { type: PACKET_TYPES.UDP, trafficWeight: 4 },
+      {
+        capacity: {
+          serverCapacityMultiplier: 1,
+          loadBalancingEnabled: true,
+          loadBalancingMultiplier: 2
+        }
+      }
+    );
+
+    expect(server.bandwidthUsage).toBeCloseTo(2);
+  });
+
+  it('prefers explicit capacity input over legacy server-owned multiplier', () => {
+    const server = new Server();
+
+    server.bandwidthCapacityMultiplier = 5;
+    server.receive(
+      { type: PACKET_TYPES.UDP, trafficWeight: 4 },
+      {
+        capacity: {
+          serverCapacityMultiplier: 1,
+          loadBalancingEnabled: false,
+          loadBalancingMultiplier: 1
+        }
+      }
+    );
+
+    expect(server.bandwidthUsage).toBeCloseTo(4);
+  });
+
   it('volume packet increases bandwidth and decays with update', () => {
     const server = new Server();
     server.receive({ type: PACKET_TYPES.UDP, trafficWeight: 2 });
@@ -141,32 +176,12 @@ describe('Server', () => {
     expect(server.droppedPacketEvents).toEqual([]);
   });
 
-  // v1.2 Tests: Reverse Proxy
-  it('initializes with origin IP and public IP', () => {
+  it('does not own topology fields such as public/origin IP or reverse-proxy flag', () => {
     const server = new Server();
-    expect(server.originIP).toBe(CONSTANTS.VICTIM_ORIGIN_IP);
-    expect(server.publicIP).toBe(CONSTANTS.VICTIM_PUBLIC_IP);
-    expect(server.reverseProxyEnabled).toBe(false);
-  });
 
-  it('changes public IP when reverse proxy is enabled', () => {
-    const server = new Server();
-    expect(server.publicIP).toBe(CONSTANTS.VICTIM_PUBLIC_IP);
-    
-    server.setReverseProxyEnabled(true);
-    expect(server.publicIP).toBe(CONSTANTS.PROXY_PUBLIC_IP);
-    expect(server.originIP).toBe(CONSTANTS.VICTIM_ORIGIN_IP); // Origin IP unchanged
-    expect(server.reverseProxyEnabled).toBe(true);
-  });
-
-  it('restores public IP when reverse proxy is disabled', () => {
-    const server = new Server();
-    
-    server.setReverseProxyEnabled(true);
-    expect(server.publicIP).toBe(CONSTANTS.PROXY_PUBLIC_IP);
-    
-    server.setReverseProxyEnabled(false);
-    expect(server.publicIP).toBe(CONSTANTS.VICTIM_PUBLIC_IP);
-    expect(server.reverseProxyEnabled).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(server, 'publicIP')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(server, 'originIP')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(server, 'reverseProxyEnabled')).toBe(false);
+    expect(typeof server.setReverseProxyEnabled).toBe('undefined');
   });
 });

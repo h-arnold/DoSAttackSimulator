@@ -1,32 +1,384 @@
-import { CONSTANTS } from '../constants.js';
+import {
+  ATTACK_TYPES,
+  CONSTANTS,
+  PROTOCOLS,
+  PROXY_BADGE_MODES
+} from '../constants.js';
 import GenuineTraffic from '../models/GenuineTraffic.js';
 import Attacker from '../models/Attacker.js';
 import Server from '../models/Server.js';
 import Firewall from '../models/Firewall.js';
-import { abbreviateNumber } from '../utils.js';
+import { calculateEffectiveCapacity } from '../models/capacityConfig.js';
+import { decideTopologyRoute, projectTopologyAddressing } from '../models/topologyConfig.js';
+import defaultSimulationState from '../state/defaultSimulationState.js';
+import SimulationStore from '../state/SimulationStore.js';
+import MetricsCollector from './MetricsCollector.js';
+import ViewModelProjector from './ViewModelProjector.js';
+
+class StoreBackedSetView {
+  constructor(getValues) {
+    this.getValues = getValues;
+  }
+
+  get size() {
+    return this.getValues().length;
+  }
+
+  has(value) {
+    return this.getValues().includes(value);
+  }
+
+  add(value) {
+    const values = this.getValues();
+    if (!values.includes(value)) {
+      values.push(value);
+    }
+    return this;
+  }
+
+  delete(value) {
+    const values = this.getValues();
+    const index = values.indexOf(value);
+    if (index >= 0) {
+      values.splice(index, 1);
+      return true;
+    }
+    return false;
+  }
+
+  clear() {
+    this.getValues().length = 0;
+  }
+
+  values() {
+    return this.getValues()[Symbol.iterator]();
+  }
+
+  forEach(callback, thisArg) {
+    this.getValues().forEach((value) => callback.call(thisArg, value, value, this));
+  }
+
+  [Symbol.iterator]() {
+    return this.values();
+  }
+}
+
+function getWeightedTotal(entries) {
+  return entries.reduce((sum, entry) => sum + (entry.weight || 0), 0);
+}
+
+export const ORCHESTRATOR_COMMAND_TYPES = Object.freeze({
+  START_SIMULATION: 'START_SIMULATION',
+  STOP_SIMULATION: 'STOP_SIMULATION',
+  START_ATTACK: 'START_ATTACK',
+  STOP_ATTACK: 'STOP_ATTACK',
+  RESET_SIMULATION: 'RESET_SIMULATION',
+  SET_ATTACK_CONFIG: 'SET_ATTACK_CONFIG',
+  SET_FIREWALL_PROTOCOL_BLOCK: 'SET_FIREWALL_PROTOCOL_BLOCK',
+  SET_FIREWALL_SUBNET_BLOCK: 'SET_FIREWALL_SUBNET_BLOCK',
+  SET_FIREWALL_RATE_LIMIT_ENABLED: 'SET_FIREWALL_RATE_LIMIT_ENABLED',
+  SET_FIREWALL_RATE_LIMIT_THRESHOLD: 'SET_FIREWALL_RATE_LIMIT_THRESHOLD',
+  SET_FIREWALL_RATE_LIMIT_SCOPE: 'SET_FIREWALL_RATE_LIMIT_SCOPE',
+  SET_REVERSE_PROXY_ENABLED: 'SET_REVERSE_PROXY_ENABLED',
+  SET_LOAD_BALANCING_ENABLED: 'SET_LOAD_BALANCING_ENABLED',
+  SET_SERVER_CAPACITY_MULTIPLIER: 'SET_SERVER_CAPACITY_MULTIPLIER',
+  SET_PROXY_BADGE_MODE: 'SET_PROXY_BADGE_MODE'
+});
+
+const VALID_ATTACK_TYPES = new Set(Object.values(ATTACK_TYPES));
+const VALID_PROTOCOLS = new Set(Object.values(PROTOCOLS));
+const VALID_RATE_LIMIT_SCOPES = new Set(['ALL', ...Object.values(PROTOCOLS)]);
 
 export default class Orchestrator {
   constructor() {
-    this.genuineTraffic = new GenuineTraffic();
-    this.attacker = new Attacker();
-    this.server = new Server();
-    this.firewall = new Firewall();
-    this.particles = [];
-    this.analyzerLogs = [];
+    this.store = new SimulationStore();
+    this.viewModelProjector = new ViewModelProjector();
     this.analyzerLogBudget = 0;
-    this.isSimulationRunning = false;
-    this.proxyBadgeMode = 'ip';
+    this.metricsSnapshotDirty = false;
+    this.metricsSnapshotTimestampMs = 0;
+    this.bindCompatibilityAccessors();
+    this.initializeModels();
   }
 
   reset() {
-    this.genuineTraffic = new GenuineTraffic();
-    this.attacker = new Attacker();
-    this.server.reset(); // v1.1: Use reset method
-    this.firewall = new Firewall();
-    this.particles = [];
-    this.analyzerLogs = [];
+    this.store.replaceState(defaultSimulationState());
     this.analyzerLogBudget = 0;
-    this.proxyBadgeMode = 'ip';
+    this.metricsSnapshotDirty = false;
+    this.metricsSnapshotTimestampMs = 0;
+    this.initializeModels();
+  }
+
+  dispatch(command) {
+    this.assertValidCommandEnvelope(command);
+
+    switch (command.type) {
+      case ORCHESTRATOR_COMMAND_TYPES.START_SIMULATION:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.START_SIMULATION);
+        if (this.isSimulationRunning) {
+          throw new Error('Invalid transition: simulation is already running.');
+        }
+        this.isSimulationRunning = true;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.STOP_SIMULATION:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.STOP_SIMULATION);
+        if (!this.isSimulationRunning) {
+          throw new Error('Invalid transition: simulation is already stopped.');
+        }
+        this.isSimulationRunning = false;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.START_ATTACK:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.START_ATTACK);
+        if (this.attacker.isAttacking) {
+          throw new Error('Invalid transition: attack is already running.');
+        }
+        this.attacker.generateBotnetRanges();
+        this.attacker.isAttacking = true;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.STOP_ATTACK:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.STOP_ATTACK);
+        if (!this.attacker.isAttacking) {
+          throw new Error('Invalid transition: attack is already stopped.');
+        }
+        this.attacker.isAttacking = false;
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.RESET_SIMULATION:
+        this.assertNoPayload(command, ORCHESTRATOR_COMMAND_TYPES.RESET_SIMULATION);
+        this.reset();
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG:
+        this.applySetAttackConfig(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_PROTOCOL_BLOCK:
+        this.applySetFirewallProtocolBlock(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_SUBNET_BLOCK:
+        this.applySetFirewallSubnetBlock(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_ENABLED:
+        this.applySetFirewallRateLimitEnabled(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_THRESHOLD:
+        this.applySetFirewallRateLimitThreshold(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_SCOPE:
+        this.applySetFirewallRateLimitScope(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED:
+        this.applySetReverseProxyEnabled(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED:
+        this.applySetLoadBalancingEnabled(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_SERVER_CAPACITY_MULTIPLIER:
+        this.applySetServerCapacityMultiplier(command);
+        return;
+      case ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE:
+        this.applySetProxyBadgeMode(command);
+        return;
+      default:
+        throw new Error(`Unknown command type: ${command.type}`);
+    }
+  }
+
+  assertValidCommandEnvelope(command) {
+    if (!command || typeof command !== 'object' || Array.isArray(command) || typeof command.type !== 'string') {
+      throw new TypeError('Command must be an object with a string type.');
+    }
+  }
+
+  assertNoPayload(command, commandType) {
+    if (Object.prototype.hasOwnProperty.call(command, 'payload')) {
+      throw new Error(`${commandType} does not accept a payload.`);
+    }
+  }
+
+  assertObjectPayload(command, commandType) {
+    const { payload } = command;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error(`${commandType} requires an object payload.`);
+    }
+    return payload;
+  }
+
+  applySetAttackConfig(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_ATTACK_CONFIG);
+    const allowedFields = ['deviceCount', 'attackType', 'bandwidthMultiplier', 'targetIP'];
+    const providedFields = Object.keys(payload);
+
+    if (!providedFields.length || providedFields.some((field) => !allowedFields.includes(field))) {
+      throw new Error('SET_ATTACK_CONFIG payload must include at least one valid attack config field.');
+    }
+
+    const nextConfig = {};
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'deviceCount')) {
+      if (!Number.isInteger(payload.deviceCount)
+        || payload.deviceCount < CONSTANTS.DEVICE_COUNT_MIN
+        || payload.deviceCount > CONSTANTS.DEVICE_COUNT_MAX) {
+        throw new Error('SET_ATTACK_CONFIG.deviceCount must be an integer within allowed range.');
+      }
+      nextConfig.deviceCount = payload.deviceCount;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'attackType')) {
+      if (!VALID_ATTACK_TYPES.has(payload.attackType)) {
+        throw new Error('SET_ATTACK_CONFIG.attackType must be one of the supported attack types.');
+      }
+      nextConfig.attackType = payload.attackType;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'bandwidthMultiplier')) {
+      if (typeof payload.bandwidthMultiplier !== 'number'
+        || Number.isNaN(payload.bandwidthMultiplier)
+        || payload.bandwidthMultiplier < CONSTANTS.BANDWIDTH_MULTIPLIER_MIN
+        || payload.bandwidthMultiplier > CONSTANTS.BANDWIDTH_MULTIPLIER_MAX) {
+        throw new Error('SET_ATTACK_CONFIG.bandwidthMultiplier must be a number within allowed range.');
+      }
+      nextConfig.bandwidthMultiplier = payload.bandwidthMultiplier;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(payload, 'targetIP')) {
+      if (typeof payload.targetIP !== 'string' || !payload.targetIP.trim()) {
+        throw new Error('SET_ATTACK_CONFIG.targetIP must be a non-empty string.');
+      }
+      nextConfig.targetIP = payload.targetIP.trim();
+    }
+
+    this.store.updateState({
+      config: {
+        attack: nextConfig
+      }
+    });
+  }
+
+  applySetFirewallProtocolBlock(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_PROTOCOL_BLOCK);
+    const { protocol, blocked } = payload;
+
+    if (!VALID_PROTOCOLS.has(protocol)) {
+      throw new Error('SET_FIREWALL_PROTOCOL_BLOCK requires a valid protocol.');
+    }
+    if (typeof blocked !== 'boolean') {
+      throw new Error('SET_FIREWALL_PROTOCOL_BLOCK requires a boolean blocked flag.');
+    }
+
+    if (blocked) {
+      this.firewall.blockedProtocols.add(protocol);
+      return;
+    }
+    this.firewall.blockedProtocols.delete(protocol);
+  }
+
+  applySetFirewallSubnetBlock(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_SUBNET_BLOCK);
+    const { subnet, blocked } = payload;
+
+    if (typeof subnet !== 'string' || !subnet.trim()) {
+      throw new Error('SET_FIREWALL_SUBNET_BLOCK requires a non-empty subnet string.');
+    }
+    if (typeof blocked !== 'boolean') {
+      throw new Error('SET_FIREWALL_SUBNET_BLOCK requires a boolean blocked flag.');
+    }
+
+    const normalizedSubnet = subnet.trim();
+    if (blocked) {
+      this.firewall.blockedIPs.add(normalizedSubnet);
+      return;
+    }
+    this.firewall.blockedIPs.delete(normalizedSubnet);
+  }
+
+  applySetFirewallRateLimitEnabled(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_ENABLED);
+    const { enabled } = payload;
+
+    if (typeof enabled !== 'boolean') {
+      throw new Error('SET_FIREWALL_RATE_LIMIT_ENABLED requires a boolean enabled flag.');
+    }
+
+    this.firewall.rateLimitEnabled = enabled;
+  }
+
+  applySetFirewallRateLimitThreshold(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_THRESHOLD);
+    const { threshold } = payload;
+
+    if (!Number.isInteger(threshold)
+      || threshold < CONSTANTS.RATE_LIMIT_MIN
+      || threshold > CONSTANTS.RATE_LIMIT_MAX) {
+      throw new Error('SET_FIREWALL_RATE_LIMIT_THRESHOLD requires an integer threshold within allowed range.');
+    }
+
+    this.firewall.rateLimitThreshold = threshold;
+  }
+
+  applySetFirewallRateLimitScope(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_FIREWALL_RATE_LIMIT_SCOPE);
+    const { scope } = payload;
+
+    if (typeof scope !== 'string' || !VALID_RATE_LIMIT_SCOPES.has(scope)) {
+      throw new Error('SET_FIREWALL_RATE_LIMIT_SCOPE requires a valid scope.');
+    }
+
+    this.firewall.rateLimitScope = scope;
+  }
+
+  applySetReverseProxyEnabled(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_REVERSE_PROXY_ENABLED);
+    const { enabled } = payload;
+
+    if (typeof enabled !== 'boolean') {
+      throw new Error('SET_REVERSE_PROXY_ENABLED requires a boolean enabled flag.');
+    }
+
+    const topology = this.getTopologyConfig();
+    const projection = projectTopologyAddressing({ ...topology, reverseProxyEnabled: enabled });
+
+    this.writeStatePath(['config', 'defense', 'topology', 'reverseProxyEnabled'], enabled);
+    this.writeStatePath(
+      ['config', 'defense', 'topology', 'publicIP'],
+      enabled ? projection.publicEntryIP : (topology.originIP || CONSTANTS.VICTIM_PUBLIC_IP)
+    );
+  }
+
+  applySetLoadBalancingEnabled(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_LOAD_BALANCING_ENABLED);
+    const { enabled } = payload;
+
+    if (typeof enabled !== 'boolean') {
+      throw new Error('SET_LOAD_BALANCING_ENABLED requires a boolean enabled flag.');
+    }
+
+    this.writeStatePath(['config', 'defense', 'capacity', 'loadBalancingEnabled'], enabled);
+    this.writeStatePath(
+      ['config', 'defense', 'capacity', 'loadBalancingMultiplier'],
+      enabled ? CONSTANTS.LOAD_BALANCING_MULTIPLIER_ENABLED : CONSTANTS.LOAD_BALANCING_MULTIPLIER_DEFAULT
+    );
+  }
+
+  applySetServerCapacityMultiplier(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_SERVER_CAPACITY_MULTIPLIER);
+    const { multiplier } = payload;
+
+    if (typeof multiplier !== 'number'
+      || Number.isNaN(multiplier)
+      || multiplier < CONSTANTS.SERVER_CAPACITY_MULTIPLIER_MIN
+      || multiplier > CONSTANTS.SERVER_CAPACITY_MULTIPLIER_MAX) {
+      throw new Error('SET_SERVER_CAPACITY_MULTIPLIER requires a numeric multiplier within allowed range.');
+    }
+
+    this.writeStatePath(['config', 'defense', 'capacity', 'serverCapacityMultiplier'], multiplier);
+  }
+
+  applySetProxyBadgeMode(command) {
+    const payload = this.assertObjectPayload(command, ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE);
+    const { mode } = payload;
+
+    if (mode !== PROXY_BADGE_MODES.IP && mode !== PROXY_BADGE_MODES.COUNT) {
+      throw new Error('SET_PROXY_BADGE_MODE requires mode to be "ip" or "count".');
+    }
+
+    this.proxyBadgeMode = mode;
   }
 
   update(dt) {
@@ -36,44 +388,58 @@ export default class Orchestrator {
       this.analyzerLogBudget = CONSTANTS.UI_ANALYZER_LOG_MAX_PER_SECOND;
     }
 
+    this.syncGenuineTrafficUsers();
+    const frameConfig = {
+      topology: this.getTopologyConfig(),
+      firewallPolicy: this.getFirewallPolicyConfig(),
+      capacity: this.getCapacityConfig()
+    };
+    const topologyProjection = projectTopologyAddressing(frameConfig.topology);
+
     // Server decay
     this.server.update(dt);
 
     // Spawn genuine traffic if simulation is running
     if (this.isSimulationRunning) {
       const genuinePackets = this.genuineTraffic.spawnPackets(dt);
-      // v1.2: Set destination IP to server's public IP
-      genuinePackets.forEach(p => p.destinationIP = this.server.publicIP);
-      this.addParticles(genuinePackets);
+      genuinePackets.forEach((packet) => {
+        packet.destinationIP = topologyProjection.publicEntryIP;
+      });
+      this.addParticles(genuinePackets, frameConfig.topology);
     }
 
     // Spawn attack traffic if attacking
     if (this.attacker.isAttacking) {
       const { packets: attackPackets } = this.attacker.spawnPackets(dt);
       // v1.2: Set destination IP to attacker's target IP
-      attackPackets.forEach(p => p.destinationIP = this.attacker.targetIP);
-      this.addParticles(attackPackets);
+      attackPackets.forEach((packet) => {
+        packet.destinationIP = this.attacker.targetIP;
+      });
+      this.addParticles(attackPackets, frameConfig.topology);
     }
 
     // Update particle positions and process arrivals
-    this.updateParticles(dt);
+    this.updateParticles(dt, frameConfig);
+    this.flushMetricsSnapshot();
   }
 
-  addParticles(newPackets) {
+  addParticles(newPackets, topology = this.getTopologyConfig()) {
     for (const packet of newPackets) {
       if (this.particles.length >= CONSTANTS.MAX_ACTIVE_PARTICLES) {
         break;
       }
+      const plainPacket = { ...packet };
       // Initialize particle position based on cluster
-      this.initializeParticlePosition(packet);
-      this.particles.push(packet);
+      this.initializeParticlePosition(plainPacket, topology);
+      this.particles.push(plainPacket);
     }
   }
 
-  initializeParticlePosition(packet) {
+  initializeParticlePosition(packet, topology = this.getTopologyConfig()) {
     const centerY = CONSTANTS.CANVAS_HEIGHT / 2;
     const leftX = 80;
     const rightX = CONSTANTS.CANVAS_WIDTH - 80;
+    const topologyProjection = projectTopologyAddressing(topology);
     
     // Determine spawn cluster based on packet type
     let spawnX, spawnY, destX, destY;
@@ -96,7 +462,7 @@ export default class Orchestrator {
     spawnY += Math.sin(angle) * distance;
     
     // Determine destination
-    if (this.server.reverseProxyEnabled) {
+    if (topologyProjection.reverseProxyEnabled) {
       // Destination is proxy node when proxy enabled
       const pipeStartX = (CONSTANTS.CANVAS_WIDTH - CONSTANTS.PIPE_WIDTH) / 2;
       destX = pipeStartX + (CONSTANTS.PIPE_WIDTH * 0.85);
@@ -126,12 +492,17 @@ export default class Orchestrator {
     }
   }
 
-  updateParticles(dt) {
+  updateParticles(dt, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
     const remaining = [];
     const pipeEndX = CONSTANTS.CANVAS_WIDTH;
     const pipeStartX = (CONSTANTS.CANVAS_WIDTH - CONSTANTS.PIPE_WIDTH) / 2;
     const proxyX = pipeStartX + (CONSTANTS.PIPE_WIDTH * 0.85);
     const rightX = CONSTANTS.CANVAS_WIDTH - 80;
+    const topologyProjection = projectTopologyAddressing(frameConfig.topology);
 
     for (const particle of this.particles) {
       // Use velocity vector if available, otherwise fall back to horizontal movement
@@ -140,7 +511,7 @@ export default class Orchestrator {
         particle.y += particle.vy * dt;
         
         // Update destination after passing proxy
-        if (this.server.reverseProxyEnabled && particle.hasPassedProxy && !particle.destinationUpdated) {
+        if (topologyProjection.reverseProxyEnabled && particle.hasPassedProxy && !particle.destinationUpdated) {
           particle.destinationUpdated = true;
           const centerY = CONSTANTS.CANVAS_HEIGHT / 2;
           const dx = rightX - particle.x;
@@ -156,11 +527,11 @@ export default class Orchestrator {
         particle.x += particle.speed * dt;
       }
 
-      if (this.processProxyCheckpoint(particle, proxyX)) {
+      if (this.processProxyCheckpoint(particle, proxyX, frameConfig)) {
         continue;
       }
 
-      if (this.processServerEdge(particle, rightX)) {
+      if (this.processServerEdge(particle, rightX, frameConfig)) {
         continue;
       }
 
@@ -174,27 +545,36 @@ export default class Orchestrator {
     this.particles = remaining;
   }
 
-  processProxyCheckpoint(particle, proxyX) {
-    if (!this.server.reverseProxyEnabled || particle.hasPassedProxy || particle.x < proxyX) {
+  processProxyCheckpoint(particle, proxyX, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
+    const projection = projectTopologyAddressing(frameConfig.topology);
+    if (!projection.reverseProxyEnabled || particle.hasPassedProxy || particle.x < proxyX) {
       return false;
     }
 
     particle.hasPassedProxy = true;
-    this.runInspection(particle);
+    this.runInspection(particle, frameConfig);
     return particle.blockedByFirewall || particle.missedTarget;
   }
 
-  processServerEdge(particle, pipeEndX) {
+  processServerEdge(particle, pipeEndX, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
     if (particle.x < pipeEndX) {
       return false;
     }
 
-    if (!this.server.reverseProxyEnabled) {
-      this.runInspection(particle);
+    if (!projectTopologyAddressing(frameConfig.topology).reverseProxyEnabled) {
+      this.runInspection(particle, frameConfig);
     }
 
     if (!particle.blockedByFirewall && !particle.missedTarget && !particle.droppedByCollision) {
-      this.processServerArrival(particle);
+      this.processServerArrival(particle, frameConfig);
     }
 
     return true;
@@ -209,6 +589,7 @@ export default class Orchestrator {
     if (shouldDropLegit) {
       particle.droppedByCollision = true;
       this.server.recordDroppedPacket(particle.trafficWeight || 1);
+      this.recordOutcome('dropped', particle);
       this.logAnalyzerEvent({
         ip: particle.sourceIP,
         type: particle.type,
@@ -225,45 +606,39 @@ export default class Orchestrator {
 
   // Exposed for tests: process a single packet arrival through proxy + server path
   processArrival(particle) {
+    const frameConfig = {
+      topology: this.getTopologyConfig(),
+      firewallPolicy: this.getFirewallPolicyConfig(),
+      capacity: this.getCapacityConfig()
+    };
     // If proxy was never crossed (e.g., direct invocation), flag it to reuse proxy logic
-    if (this.server.reverseProxyEnabled && !particle.hasPassedProxy) {
+    if (projectTopologyAddressing(frameConfig.topology).reverseProxyEnabled && !particle.hasPassedProxy) {
       particle.hasPassedProxy = true;
     }
 
-    this.runInspection(particle);
+    this.runInspection(particle, frameConfig);
 
     if (!particle.blockedByFirewall && !particle.missedTarget && !particle.droppedByCollision) {
-      this.processServerArrival(particle);
+      this.processServerArrival(particle, frameConfig);
     }
+
+    this.flushMetricsSnapshot();
   }
 
-  runInspection(particle) {
-    // v1.2: Check if packet is targeting the correct IP
-    // If reverse proxy is enabled, only packets to public IP reach the proxy
-    if (this.server.reverseProxyEnabled) {
-      // If packet destination doesn't match public IP, it doesn't reach the proxy
-      if (particle.destinationIP !== this.server.publicIP) {
-        particle.missedTarget = true;
-        this.logAnalyzerEvent({
-          ip: particle.sourceIP,
-          type: particle.type,
-          action: 'MISSED',
-          reason: 'WRONG_IP'
-        });
-        return;
-      }
-      
-      // Packet reached proxy - mark as forwarded and preserve clientIP
-      if (!particle.clientIP) {
-        particle.clientIP = particle.sourceIP;
-      }
-      // Change sourceIP to proxy egress IP (random host in proxy egress network)
-      const proxyEgressHost = Math.floor(Math.random() * 254) + 1; // 1-254 (valid host addresses)
-      particle.sourceIP = `${CONSTANTS.PROXY_EGRESS_IP_PREFIX}.${proxyEgressHost}`;
-      particle.isForwarded = true; // Mark for visualization
-    } else if (particle.destinationIP !== this.server.publicIP) {
-      // No proxy, packet must match public IP
+  runInspection(particle, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
+    const route = decideTopologyRoute({
+      topology: frameConfig.topology,
+      sourceIP: particle.sourceIP,
+      clientIP: particle.clientIP
+    });
+
+    if (particle.destinationIP !== route.initialDestinationIP) {
       particle.missedTarget = true;
+      this.recordOutcome('missed', particle);
       this.logAnalyzerEvent({
         ip: particle.sourceIP,
         type: particle.type,
@@ -273,13 +648,26 @@ export default class Orchestrator {
       });
       return;
     }
+
+    if (route.routeMode === 'REVERSE_PROXY') {
+      if (!particle.clientIP) {
+        particle.clientIP = route.clientIP;
+      }
+      particle.sourceIP = route.originSourceIP;
+      particle.isForwarded = true;
+    }
     
     // Firewall inspection
-    const firewallResult = this.firewall.inspect(particle);
+    const firewallResult = this.firewall.inspect(
+      particle,
+      Date.now() / 1000,
+      frameConfig.firewallPolicy
+    );
     
     if (!firewallResult.allowed) {
       // Firewall blocked packet
       particle.blockedByFirewall = true;
+      this.recordOutcome('blocked', particle);
       this.logAnalyzerEvent({
         ip: particle.clientIP || particle.sourceIP,
         type: particle.type,
@@ -295,11 +683,16 @@ export default class Orchestrator {
     }
   }
 
-  processServerArrival(particle) {
+  processServerArrival(particle, frameConfig = {
+    topology: this.getTopologyConfig(),
+    firewallPolicy: this.getFirewallPolicyConfig(),
+    capacity: this.getCapacityConfig()
+  }) {
     if (this.server.status === 'CRASHED') {
       if (!particle.isMalicious) {
         this.server.recordDroppedPacket(particle.trafficWeight || 1);
       }
+      this.recordOutcome('dropped', particle);
       this.logAnalyzerEvent({
         ip: particle.clientIP || particle.sourceIP,
         type: particle.type,
@@ -308,8 +701,9 @@ export default class Orchestrator {
         weight: particle.trafficWeight
       });
     } else {
-      const serverResult = this.server.receive(particle);
+      const serverResult = this.server.receive(particle, { capacity: frameConfig.capacity });
       const action = serverResult.allowed ? 'ALLOWED' : 'DROPPED';
+      this.recordOutcome(serverResult.allowed ? 'allowed' : 'dropped', particle);
 
       this.logAnalyzerEvent({
         ip: particle.clientIP || particle.sourceIP,
@@ -336,65 +730,21 @@ export default class Orchestrator {
   }
 
   getState() {
-    const aggregates = this.computeAggregates();
-    return {
-      server: {
-        bandwidthUsage: this.server.bandwidthUsage,
-        cpuLoad: this.server.cpuLoad,
-        status: this.server.status,
-        happinessScore: this.server.happinessScore,
-        droppedPackets: this.server.droppedPackets,
-        activeConnections: this.server.activeConnections.length,
-        activeConnectionWeight: this.server.getActiveConnectionWeight(),
-        publicIP: this.server.publicIP,
-        originIP: this.server.originIP,
-        reverseProxyEnabled: this.server.reverseProxyEnabled
-      },
-      attacker: {
-        deviceCount: this.attacker.deviceCount,
-        attackType: this.attacker.attackType,
-        isAttacking: this.attacker.isAttacking,
-        botnetRanges: this.attacker.botnetRanges
-      },
-      firewall: {
-        blockedProtocols: Array.from(this.firewall.blockedProtocols),
-        blockedIPs: Array.from(this.firewall.blockedIPs),
-        rateLimitEnabled: this.firewall.rateLimitEnabled,
-        rateLimitThreshold: this.firewall.rateLimitThreshold,
-        loadBalancingEnabled: this.firewall.loadBalancingEnabled,
-        detectedSubnets: this.firewall.getDetectedSubnets()
-      },
-      particles: this.particles,
-      analyzerLogs: this.analyzerLogs,
-      isSimulationRunning: this.isSimulationRunning,
-      aggregates,
-      networkNodes: {
-        attackerCount: this.attacker.deviceCount,
-        legitUserCount: CONSTANTS.GENUINE_USER_COUNT,
-        proxy: {
-          enabled: this.server.reverseProxyEnabled,
-          publicIP: this.server.publicIP,
-          badgeMode: this.proxyBadgeMode,
-          trafficLabel: abbreviateNumber(aggregates.activeWeighted)
-        },
-        origin: {
-          ip: this.server.originIP,
-          status: this.server.status
-        }
-      }
-    };
+    const state = this.store.state;
+    const aggregates = this.computeAggregates(state);
+    return this.viewModelProjector.project(state, { aggregates });
   }
 
-  computeAggregates() {
+  computeAggregates(state = this.store.state) {
     const aggregates = {
       activeWeighted: 0,
       activeLegitWeighted: 0,
       activeMaliciousWeighted: 0,
       activeByType: {},
-      halfOpenWeighted: this.server.getActiveConnectionWeight()
+      halfOpenWeighted: getWeightedTotal(state.runtime.server.activeConnections)
     };
 
-    for (const particle of this.particles) {
+    for (const particle of state.runtime.traffic.particles) {
       const weight = particle.trafficWeight || 1;
       aggregates.activeWeighted += weight;
       const typeKey = particle.type;
@@ -410,6 +760,172 @@ export default class Orchestrator {
   }
 
   setProxyBadgeMode(mode) {
-    this.proxyBadgeMode = mode === 'count' ? 'count' : 'ip';
+    this.dispatch({
+      type: ORCHESTRATOR_COMMAND_TYPES.SET_PROXY_BADGE_MODE,
+      payload: { mode: mode === PROXY_BADGE_MODES.COUNT ? PROXY_BADGE_MODES.COUNT : PROXY_BADGE_MODES.IP }
+    });
+  }
+
+  bindCompatibilityAccessors() {
+    this.bindStoreBackedProperty(this, 'isSimulationRunning', ['runtime', 'control', 'simulationRunning'], Boolean);
+    this.bindStoreBackedProperty(
+      this,
+      'proxyBadgeMode',
+      ['config', 'display', 'proxyBadgeMode'],
+      (value) => value === PROXY_BADGE_MODES.COUNT ? PROXY_BADGE_MODES.COUNT : PROXY_BADGE_MODES.IP
+    );
+    this.bindStoreBackedProperty(this, 'particles', ['runtime', 'traffic', 'particles'], (value) => Array.isArray(value) ? value : []);
+    this.bindStoreBackedProperty(this, 'analyzerLogs', ['runtime', 'metrics', 'analyzerSample', 'logs'], (value) => Array.isArray(value) ? value : []);
+  }
+
+  initializeModels() {
+    this.genuineTraffic = new GenuineTraffic();
+    this.attacker = new Attacker();
+    this.server = new Server();
+    this.firewall = new Firewall();
+    this.metricsCollector = new MetricsCollector({
+      windowMs: this.readStatePath(['runtime', 'metrics', 'rollingWindow', 'windowMs'])
+    });
+
+    this.bindGenuineTraffic();
+    this.bindAttacker();
+    this.bindServer();
+    this.bindFirewall();
+    this.syncMetricsSnapshot(0);
+    this.metricsSnapshotDirty = false;
+    this.metricsSnapshotTimestampMs = 0;
+    this.syncGenuineTrafficUsers();
+  }
+
+  getPacketWeight(particle) {
+    return Number.isFinite(particle?.trafficWeight) ? particle.trafficWeight : 1;
+  }
+
+  recordOutcome(outcome, particle, timestampMs = Date.now()) {
+    this.metricsCollector.recordOutcome(outcome, {
+      weight: this.getPacketWeight(particle),
+      timestampMs
+    });
+    this.metricsSnapshotDirty = true;
+    this.metricsSnapshotTimestampMs = timestampMs;
+  }
+
+  flushMetricsSnapshot() {
+    if (!this.metricsSnapshotDirty) {
+      return;
+    }
+
+    this.syncMetricsSnapshot(this.metricsSnapshotTimestampMs);
+    this.metricsSnapshotDirty = false;
+  }
+
+  syncMetricsSnapshot(timestampMs = Date.now()) {
+    const snapshot = this.metricsCollector.getSnapshot({ timestampMs });
+    const existingMetrics = this.readStatePath(['runtime', 'metrics']);
+    const existingAnalyzerSample = existingMetrics.analyzerSample || {};
+    const existingLogs = Array.isArray(existingAnalyzerSample.logs)
+      ? existingAnalyzerSample.logs.map((entry) => ({ ...entry }))
+      : [];
+
+    this.writeStatePath(['runtime', 'metrics'], {
+      totals: snapshot.totals,
+      rollingWindow: snapshot.rollingWindow,
+      analyzerSample: {
+        logs: existingLogs,
+        visibleCount: existingAnalyzerSample.visibleCount || 0,
+        droppedByBudgetCount: existingAnalyzerSample.droppedByBudgetCount || 0
+      },
+      analyzerDroppedCount: existingMetrics.analyzerDroppedCount || 0
+    });
+  }
+
+  bindGenuineTraffic() {
+    this.bindStoreBackedProperty(this.genuineTraffic, 'userCount', ['config', 'legitimateTraffic', 'userCount']);
+    this.bindStoreBackedProperty(this.genuineTraffic, 'packetsPerUserPerSec', ['config', 'legitimateTraffic', 'packetsPerUserPerSec']);
+  }
+
+  bindAttacker() {
+    this.bindStoreBackedProperty(this.attacker, 'deviceCount', ['config', 'attack', 'deviceCount']);
+    this.bindStoreBackedProperty(this.attacker, 'attackType', ['config', 'attack', 'attackType']);
+    this.bindStoreBackedProperty(this.attacker, 'targetIP', ['config', 'attack', 'targetIP']);
+    this.bindStoreBackedProperty(this.attacker, 'bandwidthMultiplier', ['config', 'attack', 'bandwidthMultiplier']);
+    this.bindStoreBackedProperty(this.attacker, 'isAttacking', ['runtime', 'control', 'attackRunning'], Boolean);
+    this.bindStoreBackedProperty(this.attacker, 'botnetRanges', ['runtime', 'traffic', 'botnetRanges'], (value) => Array.isArray(value) ? value : []);
+  }
+
+  bindServer() {
+    this.bindStoreBackedProperty(this.server, 'bandwidthUsage', ['runtime', 'server', 'bandwidthUsage']);
+    this.bindStoreBackedProperty(this.server, 'cpuLoad', ['runtime', 'server', 'cpuLoad']);
+    this.bindStoreBackedProperty(this.server, 'status', ['runtime', 'server', 'status']);
+    this.bindStoreBackedProperty(this.server, 'activeConnections', ['runtime', 'server', 'activeConnections'], (value) => Array.isArray(value) ? value : []);
+    this.bindStoreBackedProperty(this.server, 'droppedPacketEvents', ['runtime', 'server', 'droppedPacketEvents'], (value) => Array.isArray(value) ? value : []);
+    this.bindStoreBackedProperty(this.server, 'happinessScore', ['runtime', 'server', 'happinessScore']);
+    this.bindStoreBackedProperty(this.server, 'bandwidthCapacityMultiplier', ['config', 'defense', 'capacity', 'serverCapacityMultiplier']);
+    Object.defineProperty(this.server, 'droppedPackets', {
+      configurable: true,
+      enumerable: true,
+      get: () => getWeightedTotal(this.readStatePath(['runtime', 'server', 'droppedPacketEvents'])),
+      set: () => {}
+    });
+  }
+
+  bindFirewall() {
+    this.firewall.blockedProtocols = this.createStoreBackedSet(['config', 'defense', 'firewall', 'blockedProtocols']);
+    this.firewall.blockedIPs = this.createStoreBackedSet(['config', 'defense', 'firewall', 'blockedSubnets']);
+    this.firewall.detectedSubnets = this.createStoreBackedSet(['runtime', 'traffic', 'detectedSubnets']);
+    this.bindStoreBackedProperty(this.firewall, 'rateLimitThreshold', ['config', 'defense', 'firewall', 'rateLimit', 'threshold']);
+    this.bindStoreBackedProperty(this.firewall, 'rateLimitScope', ['config', 'defense', 'firewall', 'rateLimit', 'scope']);
+    this.bindStoreBackedProperty(this.firewall, 'rateLimitEnabled', ['config', 'defense', 'firewall', 'rateLimit', 'enabled'], Boolean);
+  }
+
+  syncGenuineTrafficUsers() {
+    if (this.genuineTraffic.userIPs.length === this.genuineTraffic.userCount) {
+      return;
+    }
+
+    this.genuineTraffic.userIPs = Array.from(
+      { length: this.genuineTraffic.userCount },
+      (_, index) => `${this.genuineTraffic.ipPrefix}.${index + 1}`
+    );
+  }
+
+  createStoreBackedSet(path) {
+    return new StoreBackedSetView(() => this.readStatePath(path));
+  }
+
+  getTopologyConfig() {
+    return this.readStatePath(['config', 'defense', 'topology']);
+  }
+
+  getFirewallPolicyConfig() {
+    return this.readStatePath(['config', 'defense', 'firewall']);
+  }
+
+  getCapacityConfig() {
+    const capacity = this.readStatePath(['config', 'defense', 'capacity']);
+    return {
+      ...capacity,
+      ...calculateEffectiveCapacity(capacity)
+    };
+  }
+
+  bindStoreBackedProperty(target, property, path, normalize = (value) => value) {
+    Object.defineProperty(target, property, {
+      configurable: true,
+      enumerable: true,
+      get: () => this.readStatePath(path),
+      set: (value) => {
+        this.writeStatePath(path, normalize(value));
+      }
+    });
+  }
+
+  readStatePath(path) {
+    return path.reduce((branch, key) => branch[key], this.store.state);
+  }
+
+  writeStatePath(path, value) {
+    const branch = path.slice(0, -1).reduce((current, key) => current[key], this.store.state);
+    branch[path[path.length - 1]] = value;
   }
 }

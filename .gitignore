@@ -47,3 +47,9 @@ out/
 .eslintcache
 /.turbo/
 /*.log
+
+# Playwright Reports
+
+playwright-report/
+test-results/
+.playwright-mcp/
